@@ -1,0 +1,14 @@
+# Compiled programs and object files
+*.o
+banking_server
+banking_client
+
+# Temporary files and backups
+*.tmp
+*.bak
+*~
+
+# Runtime data and logs
+storage/*.txt
+storage/*.log
+
