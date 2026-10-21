@@ -2,7 +2,7 @@ CC = gcc
 
 CPPFLAGS = -Iinclude -Iserver -Imodules -Iclient
 CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -g -pthread
-LDLIBS = -pthread -lcrypto
+LDLIBS = -pthread
 
 SERVER_SOURCES = \
 	server/server.c \
