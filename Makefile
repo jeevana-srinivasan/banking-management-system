@@ -1,8 +1,8 @@
 CC = gcc
 
-CPPFLAGS = -Iinclude -Iserver -Imodules -Iclient
+CPPFLAGS = -D_POSIX_C_SOURCE=200809L -Iinclude -Iserver -Imodules -Iclient
 CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -g -pthread
-LDLIBS = -pthread
+LDLIBS = -pthread -lcrypt
 
 SERVER_SOURCES = \
 	server/server.c \
