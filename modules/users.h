@@ -32,4 +32,9 @@ OperationStatus find_user_by_username(const char *username,
 OperationStatus find_user_by_id(UserId user_id,
                                 UserRecord *user);
 
+OperationStatus update_user_password_hash(
+    UserId user_id,
+    const char *new_password_hash
+);
+
 #endif

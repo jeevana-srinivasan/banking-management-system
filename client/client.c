@@ -3,38 +3,46 @@
 #include <string.h>
 #include <unistd.h>
 #include <termios.h>
+#include <errno.h>
+
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
 #include "config.h"
 #include "protocol.h"
+#include "client_ui.h"
 
-#define BUFFER_SIZE (PROTOCOL_MAX_MESSAGE + 1U)
+#define BUFFER_SIZE \
+    (PROTOCOL_MAX_MESSAGE + 1U)
 
-static int read_line(const char *prompt,
-                     char *buffer,
-                     size_t size)
+static int read_line(
+    const char *prompt,
+    char *buffer,
+    size_t size)
 {
     printf("%s", prompt);
     fflush(stdout);
 
-    if (fgets(buffer, size, stdin) == NULL)
-        return -1;
+    if (fgets(
+            buffer,
+            size,
+            stdin) == NULL) {
 
-    size_t length = strlen(buffer);
+        return -1;
+    }
+
+    size_t length =
+        strlen(buffer);
 
     if (length > 0 &&
         buffer[length - 1] == '\n') {
 
-        buffer[length - 1] = '\0';
+        buffer[length - 1] =
+            '\0';
 
     } else {
 
-        /*
-         * Input was longer than our buffer.
-         * Discard the remainder.
-         */
         int ch;
 
         while ((ch = getchar()) != '\n' &&
@@ -45,28 +53,35 @@ static int read_line(const char *prompt,
     return 0;
 }
 
-static int read_password(char *password,
-                         size_t size)
+static int read_password(
+    char *password,
+    size_t size)
 {
     struct termios old_settings;
     struct termios new_settings;
 
-    if (tcgetattr(STDIN_FILENO,
-                  &old_settings) == -1) {
+    if (tcgetattr(
+            STDIN_FILENO,
+            &old_settings) == -1) {
 
         perror("tcgetattr");
+
         return -1;
     }
 
-    new_settings = old_settings;
+    new_settings =
+        old_settings;
 
-    new_settings.c_lflag &= ~ECHO;
+    new_settings.c_lflag &=
+        ~ECHO;
 
-    if (tcsetattr(STDIN_FILENO,
-                  TCSAFLUSH,
-                  &new_settings) == -1) {
+    if (tcsetattr(
+            STDIN_FILENO,
+            TCSAFLUSH,
+            &new_settings) == -1) {
 
         perror("tcsetattr");
+
         return -1;
     }
 
@@ -75,21 +90,21 @@ static int read_password(char *password,
 
     int result = 0;
 
-    if (fgets(password,
-              size,
-              stdin) == NULL) {
+    if (fgets(
+            password,
+            size,
+            stdin) == NULL) {
 
         result = -1;
     }
 
-    /*
-     * Always restore terminal echo.
-     */
-    if (tcsetattr(STDIN_FILENO,
-                  TCSAFLUSH,
-                  &old_settings) == -1) {
+    if (tcsetattr(
+            STDIN_FILENO,
+            TCSAFLUSH,
+            &old_settings) == -1) {
 
         perror("tcsetattr");
+
         return -1;
     }
 
@@ -98,8 +113,1632 @@ static int read_password(char *password,
     if (result == -1)
         return -1;
 
-    password[strcspn(password, "\n")] =
-        '\0';
+    password[
+        strcspn(password, "\n")
+    ] = '\0';
+
+    return 0;
+}
+
+static int parse_rupees_to_paise(
+    const char *text,
+    Money *result)
+{
+    if (text == NULL ||
+        result == NULL ||
+        text[0] == '\0') {
+
+        return -1;
+    }
+
+    Money rupees = 0;
+    Money paise = 0;
+
+    size_t index = 0;
+
+    int digit_seen = 0;
+
+    while (text[index] != '\0' &&
+           text[index] != '.') {
+
+        if (text[index] < '0' ||
+            text[index] > '9') {
+
+            return -1;
+        }
+
+        int digit =
+            text[index] - '0';
+
+        if (rupees >
+            (MAX_TRANSACTION_PAISE / 100 -
+             digit) / 10) {
+
+            return -1;
+        }
+
+        rupees =
+            rupees * 10 + digit;
+
+        digit_seen = 1;
+
+        index++;
+    }
+
+    if (!digit_seen)
+        return -1;
+
+    if (text[index] == '.') {
+
+        index++;
+
+        if (text[index] == '\0')
+            return -1;
+
+        if (text[index] < '0' ||
+            text[index] > '9') {
+
+            return -1;
+        }
+
+        paise =
+            (text[index] - '0') *
+            10;
+
+        index++;
+
+        if (text[index] != '\0') {
+
+            if (text[index] < '0' ||
+                text[index] > '9') {
+
+                return -1;
+            }
+
+            paise +=
+                text[index] - '0';
+
+            index++;
+
+            if (text[index] != '\0')
+                return -1;
+        }
+    }
+
+    Money total =
+        rupees * 100 + paise;
+
+    if (total <= 0 ||
+        total >
+            MAX_TRANSACTION_PAISE) {
+
+        return -1;
+    }
+
+    *result = total;
+
+    return 0;
+}
+
+static int parse_login_success(
+    const char *response,
+    ClientUser *user)
+{
+    if (response == NULL ||
+        user == NULL) {
+
+        return -1;
+    }
+
+    if (strncmp(
+            response,
+            "LOGIN_OK|",
+            9) != 0) {
+
+        return -1;
+    }
+
+    char copy[BUFFER_SIZE];
+
+    if (strlen(response) >=
+        sizeof(copy)) {
+
+        return -1;
+    }
+
+    strcpy(copy, response);
+
+    char *saveptr = NULL;
+
+    char *token =
+        strtok_r(
+            copy,
+            "|",
+            &saveptr
+        );
+
+    if (token == NULL ||
+        strcmp(
+            token,
+            "LOGIN_OK") != 0) {
+
+        return -1;
+    }
+
+    char *id_text =
+        strtok_r(
+            NULL,
+            "|",
+            &saveptr
+        );
+
+    char *role_text =
+        strtok_r(
+            NULL,
+            "|",
+            &saveptr
+        );
+
+    char *name =
+        strtok_r(
+            NULL,
+            "|",
+            &saveptr
+        );
+
+    if (id_text == NULL ||
+        role_text == NULL ||
+        name == NULL) {
+
+        return -1;
+    }
+
+    if (strtok_r(
+            NULL,
+            "|",
+            &saveptr) != NULL) {
+
+        return -1;
+    }
+
+    errno = 0;
+
+    char *end = NULL;
+
+    long long user_id =
+        strtoll(
+            id_text,
+            &end,
+            10
+        );
+
+    if (errno != 0 ||
+        end == id_text ||
+        *end != '\0' ||
+        user_id <= 0) {
+
+        return -1;
+    }
+
+    errno = 0;
+    end = NULL;
+
+    long role =
+        strtol(
+            role_text,
+            &end,
+            10
+        );
+
+    if (errno != 0 ||
+        end == role_text ||
+        *end != '\0' ||
+        role < ROLE_CUSTOMER ||
+        role > ROLE_ADMIN) {
+
+        return -1;
+    }
+
+    if (strlen(name) >
+        MAX_NAME_LEN) {
+
+        return -1;
+    }
+
+    user->logged_in = 1;
+
+    user->user_id =
+        (UserId)user_id;
+
+    user->role =
+        (UserRole)role;
+
+    strcpy(
+        user->full_name,
+        name
+    );
+
+    return 0;
+}
+
+static void display_balance_response(
+    const char *response)
+{
+    if (strncmp(
+            response,
+            "BALANCE_OK|",
+            11) != 0) {
+
+        printf("%s\n", response);
+
+        return;
+    }
+
+    long long account_id;
+    long long paise;
+
+    if (sscanf(
+            response,
+            "BALANCE_OK|%lld|%lld",
+            &account_id,
+            &paise) != 2) {
+
+        printf(
+            "Invalid balance response.\n"
+        );
+
+        return;
+    }
+
+    printf("\n");
+    printf("----------------------------------------\n");
+
+    printf(
+        "Account ID : %lld\n",
+        account_id
+    );
+
+    printf(
+        "Balance    : %s%lld.%02lld\n",
+        CURRENCY_SYMBOL,
+        paise / 100,
+        paise % 100
+    );
+
+    printf("----------------------------------------\n");
+}
+
+static void display_deposit_response(
+    const char *response)
+{
+    if (strncmp(
+            response,
+            "DEPOSIT_OK|",
+            11) != 0) {
+
+        printf("%s\n",
+               response);
+
+        return;
+    }
+
+    long long transaction_id;
+    long long account_id;
+    long long amount;
+    long long balance;
+
+    if (sscanf(
+            response,
+            "DEPOSIT_OK|%lld|%lld|%lld|%lld",
+            &transaction_id,
+            &account_id,
+            &amount,
+            &balance) != 4) {
+
+        printf(
+            "Invalid deposit response.\n"
+        );
+
+        return;
+    }
+
+    printf("\n");
+    printf("----------------------------------------\n");
+    printf("          DEPOSIT SUCCESSFUL\n");
+    printf("----------------------------------------\n");
+
+    printf(
+        "Transaction ID : %lld\n",
+        transaction_id
+    );
+
+    printf(
+        "Account ID     : %lld\n",
+        account_id
+    );
+
+    printf(
+        "Amount         : %s%lld.%02lld\n",
+        CURRENCY_SYMBOL,
+        amount / 100,
+        amount % 100
+    );
+
+    printf(
+        "New Balance    : %s%lld.%02lld\n",
+        CURRENCY_SYMBOL,
+        balance / 100,
+        balance % 100
+    );
+
+    printf("----------------------------------------\n");
+}
+
+static void display_withdraw_response(
+    const char *response)
+{
+    if (strcmp(
+            response,
+            "WITHDRAW_FAILED|INSUFFICIENT_FUNDS") == 0) {
+
+        printf(
+            "\nWithdrawal failed: insufficient funds.\n"
+        );
+
+        return;
+    }
+
+    if (strncmp(
+            response,
+            "WITHDRAW_OK|",
+            12) != 0) {
+
+        printf("%s\n",
+               response);
+
+        return;
+    }
+
+    long long transaction_id;
+    long long account_id;
+    long long amount;
+    long long balance;
+
+    if (sscanf(
+            response,
+            "WITHDRAW_OK|%lld|%lld|%lld|%lld",
+            &transaction_id,
+            &account_id,
+            &amount,
+            &balance) != 4) {
+
+        printf(
+            "Invalid withdrawal response.\n"
+        );
+
+        return;
+    }
+
+    printf("\n");
+    printf("----------------------------------------\n");
+    printf("         WITHDRAWAL SUCCESSFUL\n");
+    printf("----------------------------------------\n");
+
+    printf(
+        "Transaction ID : %lld\n",
+        transaction_id
+    );
+
+    printf(
+        "Account ID     : %lld\n",
+        account_id
+    );
+
+    printf(
+        "Amount         : %s%lld.%02lld\n",
+        CURRENCY_SYMBOL,
+        amount / 100,
+        amount % 100
+    );
+
+    printf(
+        "New Balance    : %s%lld.%02lld\n",
+        CURRENCY_SYMBOL,
+        balance / 100,
+        balance % 100
+    );
+
+    printf("----------------------------------------\n");
+}
+
+static int send_and_receive(
+    int sock_fd,
+    const char *request,
+    char *response,
+    size_t response_size)
+{
+    if (send_message(
+            sock_fd,
+            request) == -1) {
+
+        perror("send_message");
+
+        return -1;
+    }
+
+    int result =
+        receive_message(
+            sock_fd,
+            response,
+            response_size
+        );
+
+    if (result == 0) {
+
+        printf(
+            "Server disconnected.\n"
+        );
+
+        return -1;
+    }
+
+    if (result == -1) {
+
+        fprintf(
+            stderr,
+            "Invalid server response.\n"
+        );
+
+        return -1;
+    }
+
+    return 0;
+}
+
+static int perform_login(
+    int sock_fd,
+    ClientUser *user)
+{
+    char username[
+        MAX_USERNAME_LEN + 1
+    ];
+
+    char password[
+        MAX_PASSWORD_LEN + 1
+    ];
+
+    char request[BUFFER_SIZE];
+    char response[BUFFER_SIZE];
+
+    if (read_line(
+            "Username: ",
+            username,
+            sizeof(username)) == -1) {
+
+        return -1;
+    }
+
+    if (read_password(
+            password,
+            sizeof(password)) == -1) {
+
+        return -1;
+    }
+
+    int written =
+        snprintf(
+            request,
+            sizeof(request),
+            "LOGIN|%s|%s",
+            username,
+            password
+        );
+
+    memset(
+        password,
+        0,
+        sizeof(password)
+    );
+
+    if (written < 0 ||
+        (size_t)written >=
+            sizeof(request)) {
+
+        printf(
+            "Login request is too large.\n"
+        );
+
+        return 0;
+    }
+
+    if (send_and_receive(
+            sock_fd,
+            request,
+            response,
+            sizeof(response)) == -1) {
+
+        return -1;
+    }
+
+    if (strncmp(
+            response,
+            "LOGIN_OK|",
+            9) == 0) {
+
+        if (parse_login_success(
+                response,
+                user) == -1) {
+
+            printf(
+                "Invalid login response.\n"
+            );
+
+            return 0;
+        }
+
+        printf(
+            "\nLogin successful. Welcome, %s!\n",
+            user->full_name
+        );
+
+    } else {
+
+        printf("%s\n",
+               response);
+    }
+
+    return 0;
+}
+
+static int customer_loop(
+    int sock_fd,
+    ClientUser *user)
+{
+    char choice[32];
+
+    char response[
+        BUFFER_SIZE
+    ];
+
+    while (user->logged_in) {
+
+        display_customer_menu(
+            user
+        );
+
+        if (read_line(
+                "Enter choice: ",
+                choice,
+                sizeof(choice)) == -1) {
+
+            return -1;
+        }
+
+        /*
+         * ========== VIEW BALANCE ==========
+         */
+        if (strcmp(
+                choice,
+                "1") == 0) {
+
+            if (send_and_receive(
+                    sock_fd,
+                    "VIEW_BALANCE",
+                    response,
+                    sizeof(response)) == -1) {
+
+                return -1;
+            }
+
+            display_balance_response(
+                response
+            );
+
+            continue;
+        }
+
+        /*
+         * ============= DEPOSIT =============
+         */
+        if (strcmp(
+                choice,
+                "2") == 0) {
+
+            char amount_text[64];
+
+            if (read_line(
+                    "Enter amount in rupees: ",
+                    amount_text,
+                    sizeof(amount_text)) == -1) {
+
+                return -1;
+            }
+
+            Money amount;
+
+            if (parse_rupees_to_paise(
+                    amount_text,
+                    &amount) == -1) {
+
+                printf(
+                    "\nInvalid amount. Enter a positive "
+                    "amount with at most two decimal places.\n"
+                );
+
+                continue;
+            }
+
+            char request[128];
+
+            snprintf(
+                request,
+                sizeof(request),
+                "DEPOSIT|%lld",
+                (long long)amount
+            );
+
+            if (send_and_receive(
+                    sock_fd,
+                    request,
+                    response,
+                    sizeof(response)) == -1) {
+
+                return -1;
+            }
+
+            display_deposit_response(
+                response
+            );
+
+            continue;
+        }
+
+        /*
+         * ============ WITHDRAWAL ============
+         */
+        if (strcmp(
+                choice,
+                "3") == 0) {
+
+            char amount_text[64];
+
+            if (read_line(
+                    "Enter amount in rupees: ",
+                    amount_text,
+                    sizeof(amount_text)) == -1) {
+
+                return -1;
+            }
+
+            Money amount;
+
+            if (parse_rupees_to_paise(
+                    amount_text,
+                    &amount) == -1) {
+
+                printf(
+                    "\nInvalid amount. Enter a positive "
+                    "amount with at most two decimal places.\n"
+                );
+
+                continue;
+            }
+
+            char request[128];
+
+            snprintf(
+                request,
+                sizeof(request),
+                "WITHDRAW|%lld",
+                (long long)amount
+            );
+
+            if (send_and_receive(
+                    sock_fd,
+                    request,
+                    response,
+                    sizeof(response)) == -1) {
+
+                return -1;
+            }
+
+            display_withdraw_response(
+                response
+            );
+
+            continue;
+        }
+
+        /*
+	 *Transfer
+	 */
+
+	if (strcmp(choice, "4") == 0) {
+
+   	 char account_text[64];
+   	 char amount_text[64];
+
+  	  if (read_line(
+        	    "Enter destination account ID: ",
+           	 account_text,
+           	 sizeof(account_text)) == -1) {
+
+    	    return -1;
+  	  }
+
+  	  errno = 0;
+
+ 	  char *end = NULL;
+
+   	 long long destination =
+       	 strtoll(
+           	 account_text,
+           	 &end,
+           	 10
+       	 );
+
+   	 if (errno != 0 ||
+       	 end == account_text ||
+       	 *end != '\0' ||
+       	 destination <= 0) {
+
+        printf(
+            "\nInvalid destination account ID.\n"
+        );
+
+        continue;
+    }
+
+    if (read_line(
+            "Enter amount in rupees: ",
+            amount_text,
+            sizeof(amount_text)) == -1) {
+
+        return -1;
+    }
+
+    Money amount;
+
+    if (parse_rupees_to_paise(
+            amount_text,
+            &amount) == -1) {
+
+        printf(
+            "\nInvalid amount.\n"
+        );
+
+        continue;
+    }
+
+    char request[256];
+
+    snprintf(
+        request,
+        sizeof(request),
+        "TRANSFER|%lld|%lld",
+        destination,
+        (long long)amount
+    );
+
+    if (send_and_receive(
+            sock_fd,
+            request,
+            response,
+            sizeof(response)) == -1) {
+
+        return -1;
+    }
+
+    if (strcmp(
+            response,
+            "TRANSFER_FAILED|INSUFFICIENT_FUNDS") == 0) {
+
+        printf(
+            "\nTransfer failed: insufficient funds.\n"
+        );
+
+        continue;
+    }
+
+    if (strcmp(
+            response,
+            "TRANSFER_FAILED|DESTINATION_NOT_FOUND") == 0) {
+
+        printf(
+            "\nTransfer failed: destination account does not exist.\n"
+        );
+
+        continue;
+    }
+
+    if (strcmp(
+            response,
+            "TRANSFER_FAILED|SAME_ACCOUNT") == 0) {
+
+        printf(
+            "\nTransfer failed: source and destination cannot be the same account.\n"
+        );
+
+        continue;
+    }
+
+    if (strncmp(
+            response,
+            "TRANSFER_OK|",
+            12) == 0) {
+
+        long long reference_id;
+        long long source_id;
+        long long destination_id;
+        long long transferred;
+        long long new_balance;
+
+        if (sscanf(
+                response,
+                "TRANSFER_OK|%lld|%lld|%lld|%lld|%lld",
+                &reference_id,
+                &source_id,
+                &destination_id,
+                &transferred,
+                &new_balance) == 5) {
+
+            printf("\n");
+            printf("----------------------------------------\n");
+            printf("          TRANSFER SUCCESSFUL\n");
+            printf("----------------------------------------\n");
+
+            printf(
+                "Reference ID        : %lld\n",
+                reference_id
+            );
+
+            printf(
+                "From Account        : %lld\n",
+                source_id
+            );
+
+            printf(
+                "To Account          : %lld\n",
+                destination_id
+            );
+
+            printf(
+                "Amount              : %s%lld.%02lld\n",
+                CURRENCY_SYMBOL,
+                transferred / 100,
+                transferred % 100
+            );
+
+            printf(
+                "Your New Balance    : %s%lld.%02lld\n",
+                CURRENCY_SYMBOL,
+                new_balance / 100,
+                new_balance % 100
+            );
+
+            printf("----------------------------------------\n");
+
+        } else {
+
+            printf(
+                "Invalid transfer response.\n"
+            );
+        }
+
+        continue;
+    }
+
+    printf("%s\n",
+           response);
+
+    continue;
+}
+
+	/* Transaction history*/
+if (strcmp(
+        choice,
+        "5") == 0) {
+
+    if (send_and_receive(
+            sock_fd,
+            "TRANSACTION_HISTORY",
+            response,
+            sizeof(response)) == -1) {
+
+        return -1;
+    }
+
+    if (strcmp(
+            response,
+            "HISTORY_EMPTY") == 0) {
+
+        printf(
+            "\nNo transactions found.\n"
+        );
+
+        continue;
+    }
+
+    if (strncmp(
+            response,
+            "HISTORY_OK|",
+            11) == 0) {
+
+        printf("\n");
+        printf("========================================\n");
+        printf("          TRANSACTION HISTORY\n");
+        printf("========================================\n");
+
+        printf(
+            "%s",
+            response + 11
+        );
+
+        printf(
+            "========================================\n"
+        );
+
+        continue;
+    }
+
+    printf(
+        "%s\n",
+        response
+    );
+
+    continue;
+}
+
+/*loan application*/
+
+if (strcmp(
+        choice,
+        "6") == 0) {
+
+    char amount_text[64];
+    char tenure_text[32];
+
+    if (read_line(
+            "Enter loan amount in rupees: ",
+            amount_text,
+            sizeof(amount_text)) == -1) {
+
+        return -1;
+    }
+
+    Money amount;
+
+    if (parse_rupees_to_paise(
+            amount_text,
+            &amount) == -1) {
+
+        printf(
+            "\nInvalid loan amount.\n"
+        );
+
+        continue;
+    }
+
+    printf("\nAvailable tenure options:\n");
+    printf("6 months\n");
+    printf("12 months\n");
+    printf("24 months\n");
+    printf("36 months\n");
+    printf("60 months\n");
+
+    if (read_line(
+            "Enter tenure in months: ",
+            tenure_text,
+            sizeof(tenure_text)) == -1) {
+
+        return -1;
+    }
+
+    errno = 0;
+
+    char *end = NULL;
+
+    long tenure =
+        strtol(
+            tenure_text,
+            &end,
+            10
+        );
+
+    if (errno != 0 ||
+        end == tenure_text ||
+        *end != '\0' ||
+        (tenure != 6 &&
+         tenure != 12 &&
+         tenure != 24 &&
+         tenure != 36 &&
+         tenure != 60)) {
+
+        printf(
+            "\nInvalid tenure.\n"
+        );
+
+        continue;
+    }
+
+    char request[256];
+
+    snprintf(
+        request,
+        sizeof(request),
+        "APPLY_LOAN|%lld|%ld",
+        (long long)amount,
+        tenure
+    );
+
+    if (send_and_receive(
+            sock_fd,
+            request,
+            response,
+            sizeof(response)) == -1) {
+
+        return -1;
+    }
+
+    if (strncmp(
+            response,
+            "LOAN_OK|",
+            8) == 0) {
+
+        long long loan_id;
+        long long loan_amount;
+        int loan_tenure;
+        int interest_bp;
+        int status;
+
+        if (sscanf(
+                response,
+                "LOAN_OK|%lld|%lld|%d|%d|%d",
+                &loan_id,
+                &loan_amount,
+                &loan_tenure,
+                &interest_bp,
+                &status) == 5) {
+
+            printf("\n");
+            printf("----------------------------------------\n");
+            printf("        LOAN APPLICATION SUBMITTED\n");
+            printf("----------------------------------------\n");
+
+            printf(
+                "Loan ID       : %lld\n",
+                loan_id
+            );
+
+            printf(
+                "Amount        : %s%lld.%02lld\n",
+                CURRENCY_SYMBOL,
+                loan_amount / 100,
+                loan_amount % 100
+            );
+
+            printf(
+                "Tenure        : %d months\n",
+                loan_tenure
+            );
+
+            printf(
+                "Interest Rate : %d.%02d%% per annum\n",
+                interest_bp / 100,
+                interest_bp % 100
+            );
+
+            printf(
+                "Status        : PENDING\n"
+            );
+
+            printf("----------------------------------------\n");
+
+        } else {
+
+            printf(
+                "Invalid loan response.\n"
+            );
+        }
+
+        continue;
+    }
+
+    printf(
+        "%s\n",
+        response
+    );
+
+    continue;
+}
+
+if (strcmp(
+        choice,
+        "7") == 0) {
+
+    if (send_and_receive(
+            sock_fd,
+            "VIEW_LOANS",
+            response,
+            sizeof(response)) == -1) {
+
+        return -1;
+    }
+
+    if (strcmp(
+            response,
+            "LOANS_EMPTY") == 0) {
+
+        printf(
+            "\nYou have no loan applications.\n"
+        );
+
+        continue;
+    }
+
+    /*view loans*/
+
+    if (strncmp(
+            response,
+            "LOANS_OK|",
+            9) == 0) {
+
+        printf("\n");
+        printf("========================================\n");
+        printf("             MY LOANS\n");
+        printf("========================================\n");
+
+        printf(
+            "%s",
+            response + 9
+        );
+
+        printf(
+            "========================================\n"
+        );
+
+        continue;
+    }
+
+    printf(
+        "%s\n",
+        response
+    );
+
+    continue;
+}
+
+if (strcmp(
+        choice,
+        "8") == 0) {
+
+    char current_password[
+        MAX_PASSWORD_LEN + 1
+    ];
+
+    char new_password[
+        MAX_PASSWORD_LEN + 1
+    ];
+
+    char confirm_password[
+        MAX_PASSWORD_LEN + 1
+    ];
+
+    printf("\n");
+
+    if (read_password(
+            current_password,
+            sizeof(current_password)) == -1) {
+
+        return -1;
+    }
+
+    printf(
+        "Enter new "
+    );
+
+    if (read_password(
+            new_password,
+            sizeof(new_password)) == -1) {
+
+        memset(
+            current_password,
+            0,
+            sizeof(current_password)
+        );
+
+        return -1;
+    }
+
+    printf(
+        "Confirm new "
+    );
+
+    if (read_password(
+            confirm_password,
+            sizeof(confirm_password)) == -1) {
+
+        memset(
+            current_password,
+            0,
+            sizeof(current_password)
+        );
+
+        memset(
+            new_password,
+            0,
+            sizeof(new_password)
+        );
+
+        return -1;
+    }
+
+    if (strcmp(
+            new_password,
+            confirm_password) != 0) {
+
+        printf(
+            "\nNew passwords do not match.\n"
+        );
+
+        memset(
+            current_password,
+            0,
+            sizeof(current_password)
+        );
+
+        memset(
+            new_password,
+            0,
+            sizeof(new_password)
+        );
+
+        memset(
+            confirm_password,
+            0,
+            sizeof(confirm_password)
+        );
+
+        continue;
+    }
+
+    size_t new_length =
+        strlen(new_password);
+
+    if (new_length < 8) {
+
+        printf(
+            "\nNew password must contain at least "
+            "8 characters.\n"
+        );
+
+        memset(
+            current_password,
+            0,
+            sizeof(current_password)
+        );
+
+        memset(
+            new_password,
+            0,
+            sizeof(new_password)
+        );
+
+        memset(
+            confirm_password,
+            0,
+            sizeof(confirm_password)
+        );
+
+        continue;
+    }
+
+    char request[
+        2 * MAX_PASSWORD_LEN + 64
+    ];
+
+    int written =
+        snprintf(
+            request,
+            sizeof(request),
+            "CHANGE_PASSWORD|%s|%s",
+            current_password,
+            new_password
+        );
+
+    memset(
+        current_password,
+        0,
+        sizeof(current_password)
+    );
+
+    memset(
+        new_password,
+        0,
+        sizeof(new_password)
+    );
+
+    memset(
+        confirm_password,
+        0,
+        sizeof(confirm_password)
+    );
+
+    if (written < 0 ||
+        (size_t)written >=
+            sizeof(request)) {
+
+        printf(
+            "\nPassword request is too large.\n"
+        );
+
+        continue;
+    }
+
+    if (send_and_receive(
+            sock_fd,
+            request,
+            response,
+            sizeof(response)) == -1) {
+
+        memset(
+            request,
+            0,
+            sizeof(request)
+        );
+
+        return -1;
+    }
+
+    /*
+     * Request contains plaintext credentials,
+     * so clear it after transmission.
+     */
+    memset(
+        request,
+        0,
+        sizeof(request)
+    );
+
+    if (strcmp(
+            response,
+            "PASSWORD_OK") == 0) {
+
+        printf(
+            "\nPassword changed successfully.\n"
+        );
+
+        continue;
+    }
+
+    if (strcmp(
+            response,
+            "PASSWORD_FAILED|INCORRECT_CURRENT_PASSWORD") == 0) {
+
+        printf(
+            "\nCurrent password is incorrect.\n"
+        );
+
+        continue;
+    }
+
+    if (strcmp(
+            response,
+            "PASSWORD_FAILED|SAME_PASSWORD") == 0) {
+
+        printf(
+            "\nNew password must be different from "
+            "your current password.\n"
+        );
+
+        continue;
+    }
+
+    if (strcmp(
+            response,
+            "PASSWORD_FAILED|INVALID_NEW_PASSWORD") == 0) {
+
+        printf(
+            "\nInvalid new password.\n"
+        );
+
+        continue;
+    }
+
+    printf(
+        "%s\n",
+        response
+    );
+
+    continue;
+}
+
+if (strcmp(
+        choice,
+        "9") == 0) {
+
+    char feedback[
+        MAX_FEEDBACK_LEN + 1
+    ];
+
+    if (read_line(
+            "Enter feedback: ",
+            feedback,
+            sizeof(feedback)) == -1) {
+
+        return -1;
+    }
+
+    if (feedback[0] == '\0') {
+
+        printf(
+            "\nFeedback cannot be empty.\n"
+        );
+
+        continue;
+    }
+
+    if (strchr(
+            feedback,
+            '|') != NULL) {
+
+        printf(
+            "\nFeedback cannot contain the '|' character.\n"
+        );
+
+        continue;
+    }
+
+    char request[
+        MAX_FEEDBACK_LEN + 64
+    ];
+
+    int written =
+        snprintf(
+            request,
+            sizeof(request),
+            "SUBMIT_FEEDBACK|%s",
+            feedback
+        );
+
+    if (written < 0 ||
+        (size_t)written >=
+            sizeof(request)) {
+
+        printf(
+            "\nFeedback is too long.\n"
+        );
+
+        continue;
+    }
+
+    if (send_and_receive(
+            sock_fd,
+            request,
+            response,
+            sizeof(response)) == -1) {
+
+        return -1;
+    }
+
+    if (strncmp(
+            response,
+            "FEEDBACK_OK|",
+            12) == 0) {
+
+        long long feedback_id;
+
+        char timestamp[32];
+
+        if (sscanf(
+                response,
+                "FEEDBACK_OK|%lld|%31[^\n]",
+                &feedback_id,
+                timestamp) == 2) {
+
+            printf("\n");
+            printf("----------------------------------------\n");
+            printf("        FEEDBACK SUBMITTED\n");
+            printf("----------------------------------------\n");
+
+            printf(
+                "Feedback ID : %lld\n",
+                feedback_id
+            );
+
+            printf(
+                "Submitted   : %s\n",
+                timestamp
+            );
+
+            printf("----------------------------------------\n");
+
+        } else {
+
+            printf(
+                "\nFeedback submitted successfully.\n"
+            );
+        }
+
+        continue;
+    }
+
+    if (strcmp(
+            response,
+            "FEEDBACK_FAILED|INVALID_MESSAGE") == 0) {
+
+        printf(
+            "\nInvalid feedback message.\n"
+        );
+
+        continue;
+    }
+
+    printf(
+        "%s\n",
+        response
+    );
+
+    continue;
+}
+
+        /*
+         * ============== LOGOUT ==============
+         */
+        if (strcmp(choice,"10") == 0) {
+
+            if (send_and_receive(
+                    sock_fd,
+                    "LOGOUT",
+                    response,
+                    sizeof(response)) == -1) {
+
+                return -1;
+            }
+
+            printf("%s\n",
+                   response);
+
+            if (strcmp(
+                    response,
+                    "LOGOUT_OK") == 0) {
+
+                memset(
+                    user,
+                    0,
+                    sizeof(*user)
+                );
+            }
+
+            continue;
+        }
+
+        /*
+         * =============== EXIT ===============
+         */
+        if (strcmp(
+                choice,
+                "0") == 0) {
+
+            if (send_and_receive(
+                    sock_fd,
+                    "EXIT",
+                    response,
+                    sizeof(response)) == -1) {
+
+                return -1;
+            }
+
+            printf("%s\n",
+                   response);
+
+            return 1;
+        }
+
+        printf(
+            "\nInvalid choice.\n"
+        );
+    }
 
     return 0;
 }
@@ -107,150 +1746,185 @@ static int read_password(char *password,
 int main(void)
 {
     int sock_fd;
-    struct sockaddr_in server_addr;
 
-    char command[BUFFER_SIZE];
-    char request[BUFFER_SIZE];
-    char response[BUFFER_SIZE];
+    struct sockaddr_in
+        server_addr;
+
+    ClientUser user;
+
+    memset(
+        &user,
+        0,
+        sizeof(user)
+    );
 
     sock_fd =
-        socket(AF_INET, SOCK_STREAM, 0);
+        socket(
+            AF_INET,
+            SOCK_STREAM,
+            0
+        );
 
     if (sock_fd == -1) {
+
         perror("socket");
+
         return EXIT_FAILURE;
     }
 
-    memset(&server_addr,
-           0,
-           sizeof(server_addr));
+    memset(
+        &server_addr,
+        0,
+        sizeof(server_addr)
+    );
 
-    server_addr.sin_family = AF_INET;
+    server_addr.sin_family =
+        AF_INET;
+
     server_addr.sin_port =
         htons(SERVER_PORT);
 
-    if (inet_pton(AF_INET,
-                  SERVER_IP,
-                  &server_addr.sin_addr) != 1) {
+    if (inet_pton(
+            AF_INET,
+            SERVER_IP,
+            &server_addr.sin_addr) != 1) {
 
-        fprintf(stderr,
-                "Invalid server IP address.\n");
+        fprintf(
+            stderr,
+            "Invalid server IP address.\n"
+        );
 
         close(sock_fd);
+
         return EXIT_FAILURE;
     }
 
-    if (connect(sock_fd,
-                (struct sockaddr *)&server_addr,
-                sizeof(server_addr)) == -1) {
+    if (connect(
+            sock_fd,
+            (struct sockaddr *)&server_addr,
+            sizeof(server_addr)) == -1) {
 
         perror("connect");
 
         close(sock_fd);
+
         return EXIT_FAILURE;
     }
 
-    printf("Connected to banking server.\n\n");
+    printf(
+        "Connected to banking server.\n"
+    );
 
-    printf("Available test commands:\n");
-    printf("  LOGIN\n");
-    printf("  LOGOUT\n");
-    printf("  WHOAMI\n");
-    printf("  EXIT\n\n");
+    int running = 1;
 
-    while (1) {
+    while (running) {
 
-        if (read_line("bank> ",
-                      command,
-                      sizeof(command)) == -1) {
+        if (!user.logged_in) {
 
-            printf("\nInput ended.\n");
-            break;
-        }
+            char choice[32];
 
-        if (command[0] == '\0')
-            continue;
+            printf("\n");
+            printf("========================================\n");
+            printf("          BANKING MANAGEMENT SYSTEM\n");
+            printf("========================================\n");
+            printf("1. Login\n");
+            printf("0. Exit\n");
+            printf("========================================\n");
 
-        /*
-         * LOGIN needs username and hidden password.
-         */
-        if (strcmp(command, "LOGIN") == 0) {
+            if (read_line(
+                    "Enter choice: ",
+                    choice,
+                    sizeof(choice)) == -1) {
 
-            char username[MAX_USERNAME_LEN + 1];
-            char password[MAX_PASSWORD_LEN + 1];
-
-            if (read_line("Username: ",
-                          username,
-                          sizeof(username)) == -1) {
                 break;
             }
 
-            if (read_password(password,
-                              sizeof(password)) == -1) {
-                break;
-            }
+            if (strcmp(
+                    choice,
+                    "1") == 0) {
 
-            int written =
-                snprintf(request,
-                         sizeof(request),
-                         "LOGIN|%s|%s",
-                         username,
-                         password);
+                if (perform_login(
+                        sock_fd,
+                        &user) == -1) {
 
-            memset(password,
-                   0,
-                   sizeof(password));
+                    break;
+                }
 
-            if (written < 0 ||
-                (size_t)written >= sizeof(request)) {
-
-                printf("Login request is too large.\n");
                 continue;
             }
 
-        } else {
+            if (strcmp(
+                    choice,
+                    "0") == 0) {
 
-            snprintf(request,
-                     sizeof(request),
-                     "%s",
-                     command);
+                char response[
+                    BUFFER_SIZE
+                ];
+
+                if (send_and_receive(
+                        sock_fd,
+                        "EXIT",
+                        response,
+                        sizeof(response)) == -1) {
+
+                    break;
+                }
+
+                printf("%s\n",
+                       response);
+
+                break;
+            }
+
+            printf(
+                "\nInvalid choice.\n"
+            );
+
+            continue;
         }
 
-        if (send_message(sock_fd,
-                         request) == -1) {
+        if (user.role ==
+            ROLE_CUSTOMER) {
 
-            perror("send_message");
-            break;
+            int result =
+                customer_loop(
+                    sock_fd,
+                    &user
+                );
+
+            if (result != 0)
+                running = 0;
+
+            continue;
         }
 
-        int result =
-            receive_message(sock_fd,
-                            response,
-                            sizeof(response));
+        printf(
+            "\nRole menu not implemented yet.\n"
+        );
 
-        if (result == 0) {
+        char response[
+            BUFFER_SIZE
+        ];
 
-            printf("Server disconnected.\n");
-            break;
-        }
+        send_and_receive(
+            sock_fd,
+            "LOGOUT",
+            response,
+            sizeof(response)
+        );
 
-        if (result == -1) {
-
-            fprintf(stderr,
-                    "Invalid server response.\n");
-
-            break;
-        }
-
-        printf("%s\n\n", response);
-
-        if (strcmp(command, "EXIT") == 0)
-            break;
+        memset(
+            &user,
+            0,
+            sizeof(user)
+        );
     }
 
     close(sock_fd);
 
-    printf("Connection closed.\n");
+    printf(
+        "Connection closed.\n"
+    );
 
     return EXIT_SUCCESS;
 }
