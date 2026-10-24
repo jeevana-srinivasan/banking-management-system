@@ -59,3 +59,42 @@ void display_customer_menu(const ClientUser *user)
 
     printf("========================================\n");
 }
+
+void display_employee_menu(
+    const ClientUser *user)
+{
+    printf("\n");
+    printf("========================================\n");
+    printf("             EMPLOYEE MENU\n");
+    printf("========================================\n");
+
+    printf(
+        "User ID : %lld\n",
+        (long long)user->user_id
+    );
+
+    printf(
+        "Name    : %s\n",
+        user->full_name
+    );
+
+    printf(
+        "Role    : %s\n",
+        client_role_name(user->role)
+    );
+
+    printf("----------------------------------------\n");
+
+    printf("1. Add New Customer Account\n");
+    printf("2. View Customer Account Details\n");
+    printf("3. Modify Customer Details\n");
+    printf("4. Close Customer Account\n");
+    printf("5. View Customer Transactions\n");
+    printf("6. View Assigned Loan Applications\n");
+    printf("7. Process Loan Application\n");
+    printf("8. Change Password\n");
+    printf("9. Logout\n");
+    printf("0. Exit\n");
+
+    printf("========================================\n");
+}

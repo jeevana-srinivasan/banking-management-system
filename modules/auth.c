@@ -136,6 +136,59 @@ static int generate_password_salt(
     return 0;
 }
 
+OperationStatus generate_password_hash(
+    const char *password,
+    char *hash_output,
+    size_t output_size)
+{
+    if (password == NULL ||
+        hash_output == NULL ||
+        output_size == 0) {
+
+        return STATUS_INVALID_INPUT;
+    }
+
+    size_t length =
+        strlen(password);
+
+    if (length < 8 ||
+        length > MAX_PASSWORD_LEN) {
+
+        return STATUS_INVALID_INPUT;
+    }
+
+    char salt[64];
+
+    if (generate_password_salt(
+            salt,
+            sizeof(salt)) == -1) {
+
+        return STATUS_INTERNAL_ERROR;
+    }
+
+    char *generated =
+        crypt(
+            password,
+            salt
+        );
+
+    if (generated == NULL)
+        return STATUS_INTERNAL_ERROR;
+
+    if (strlen(generated) >=
+        output_size) {
+
+        return STATUS_INTERNAL_ERROR;
+    }
+
+    strcpy(
+        hash_output,
+        generated
+    );
+
+    return STATUS_OK;
+}
+
 OperationStatus change_user_password(
     UserId user_id,
     const char *current_password,

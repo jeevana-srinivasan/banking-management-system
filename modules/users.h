@@ -37,4 +37,22 @@ OperationStatus update_user_password_hash(
     const char *new_password_hash
 );
 
+OperationStatus update_user_full_name(
+    UserId user_id,
+    const char *new_full_name
+);
+
+OperationStatus create_user_record(
+    const char *username,
+    const char *password_hash,
+    UserRole role,
+    int active,
+    const char *full_name,
+    UserRecord *created_user
+);
+
+OperationStatus delete_user_by_id(
+    UserId user_id
+);
+
 #endif

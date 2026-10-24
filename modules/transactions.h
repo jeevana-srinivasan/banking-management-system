@@ -55,4 +55,10 @@ OperationStatus get_transaction_history(
     size_t output_size
 );
 
+OperationStatus get_account_transaction_history(
+    AccountId account_id,
+    char *output,
+    size_t output_size
+);
+
 #endif

@@ -49,4 +49,21 @@ OperationStatus transfer_from_user_account(
     TransactionId *reference_id
 );
 
+OperationStatus open_customer_account(
+    UserId customer_user_id,
+    Money initial_balance,
+    UserId performed_by,
+    AccountRecord *created_account
+);
+
+OperationStatus find_account_by_user_any_status(
+    UserId user_id,
+    AccountRecord *account
+);
+
+OperationStatus close_customer_account(
+    AccountId account_id,
+    AccountRecord *closed_account
+);
+
 #endif

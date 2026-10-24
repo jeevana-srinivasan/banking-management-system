@@ -12,6 +12,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <time.h>
 
 #define ACCOUNTS_FILE STORAGE_DIR "/accounts.txt"
 #define ACCOUNT_LINE_SIZE 128
@@ -20,6 +21,9 @@
 
 static pthread_mutex_t
     account_mutexes[ACCOUNT_MUTEX_COUNT];
+
+static pthread_mutex_t account_create_mutex =
+    PTHREAD_MUTEX_INITIALIZER;
 
 static pthread_once_t account_mutex_once =
     PTHREAD_ONCE_INIT;
@@ -1069,4 +1073,785 @@ transfer_cleanup:
     pthread_mutex_unlock(first_mutex);
 
     return status;
+}
+
+
+/* EMPLOYEE */
+
+static int lock_accounts_file(
+    int fd,
+    short lock_type)
+{
+    struct flock lock;
+
+    memset(
+        &lock,
+        0,
+        sizeof(lock)
+    );
+
+    lock.l_type =
+        lock_type;
+
+    lock.l_whence =
+        SEEK_SET;
+
+    lock.l_start = 0;
+    lock.l_len = 0;
+
+    while (fcntl(
+               fd,
+               F_SETLKW,
+               &lock) == -1) {
+
+        if (errno == EINTR)
+            continue;
+
+        return -1;
+    }
+
+    return 0;
+}
+
+static int unlock_accounts_file(
+    int fd)
+{
+    struct flock lock;
+
+    memset(
+        &lock,
+        0,
+        sizeof(lock)
+    );
+
+    lock.l_type =
+        F_UNLCK;
+
+    lock.l_whence =
+        SEEK_SET;
+
+    lock.l_start = 0;
+    lock.l_len = 0;
+
+    return fcntl(
+        fd,
+        F_SETLK,
+        &lock
+    );
+}
+
+static int account_timestamp(
+    char *buffer,
+    size_t size)
+{
+    time_t now =
+        time(NULL);
+
+    if (now == (time_t)-1)
+        return -1;
+
+    struct tm local_time;
+
+    if (localtime_r(
+            &now,
+            &local_time) == NULL) {
+
+        return -1;
+    }
+
+    if (strftime(
+            buffer,
+            size,
+            "%Y-%m-%d %H:%M:%S",
+            &local_time) == 0) {
+
+        return -1;
+    }
+
+    return 0;
+}
+
+static AccountId next_account_id_locked(
+    int fd)
+{
+    struct stat info;
+
+    if (fstat(
+            fd,
+            &info) == -1) {
+
+        return -1;
+    }
+
+    AccountId maximum =
+        50000;
+
+    for (off_t offset = 0;
+         offset < info.st_size;
+         offset += ACCOUNT_RECORD_SIZE) {
+
+        char record[
+            ACCOUNT_RECORD_SIZE + 1
+        ];
+
+        ssize_t n =
+            pread(
+                fd,
+                record,
+                ACCOUNT_RECORD_SIZE,
+                offset
+            );
+
+        if (n != ACCOUNT_RECORD_SIZE)
+            continue;
+
+        record[
+            ACCOUNT_RECORD_SIZE
+        ] = '\0';
+
+        AccountRecord account;
+
+        if (parse_account_line(
+                record,
+                &account) != 0) {
+
+            continue;
+        }
+
+        if (account.account_id >
+            maximum) {
+
+            maximum =
+                account.account_id;
+        }
+    }
+
+    if (maximum >=
+        9999999999LL) {
+
+        return -1;
+    }
+
+    return maximum + 1;
+}
+
+OperationStatus open_customer_account(
+    UserId customer_user_id,
+    Money initial_balance,
+    UserId performed_by,
+    AccountRecord *created_account)
+{
+    if (customer_user_id <= 0 ||
+        customer_user_id >
+            9999999999LL ||
+        performed_by <= 0 ||
+        initial_balance < 0 ||
+        initial_balance >
+            MAX_TRANSACTION_PAISE ||
+        created_account == NULL) {
+
+        return STATUS_INVALID_INPUT;
+    }
+
+    /*
+     * We currently allow only one ACTIVE
+     * account per customer.
+     */
+    AccountRecord existing;
+
+    OperationStatus existing_status =
+        find_account_by_user(
+            customer_user_id,
+            &existing
+        );
+
+    if (existing_status ==
+        STATUS_OK) {
+
+        return STATUS_DUPLICATE;
+    }
+
+    if (existing_status !=
+            STATUS_NOT_FOUND &&
+        existing_status !=
+            STATUS_OK) {
+
+        return existing_status;
+    }
+
+    pthread_mutex_lock(
+        &account_create_mutex
+    );
+
+    int fd =
+        open(
+            ACCOUNTS_FILE,
+            O_RDWR |
+            O_CREAT,
+            0660
+        );
+
+    if (fd == -1) {
+
+        pthread_mutex_unlock(
+            &account_create_mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    /*
+     * Account creation changes file length,
+     * therefore lock the entire file.
+     */
+    if (lock_accounts_file(
+            fd,
+            F_WRLCK) == -1) {
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            &account_create_mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    /*
+     * Re-check while holding the creation lock.
+     * Another worker/process may have created
+     * the account since our first check.
+     */
+    struct stat info;
+
+    if (fstat(fd, &info) == -1 ||
+        info.st_size %
+            ACCOUNT_RECORD_SIZE != 0) {
+
+        unlock_accounts_file(fd);
+        close(fd);
+
+        pthread_mutex_unlock(
+            &account_create_mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    for (off_t offset = 0;
+         offset < info.st_size;
+         offset += ACCOUNT_RECORD_SIZE) {
+
+        char record[
+            ACCOUNT_RECORD_SIZE + 1
+        ];
+
+        if (pread(
+                fd,
+                record,
+                ACCOUNT_RECORD_SIZE,
+                offset) !=
+            ACCOUNT_RECORD_SIZE) {
+
+            continue;
+        }
+
+        record[
+            ACCOUNT_RECORD_SIZE
+        ] = '\0';
+
+        AccountRecord current;
+
+        if (parse_account_line(
+                record,
+                &current) != 0) {
+
+            continue;
+        }
+
+        if (current.user_id ==
+                customer_user_id &&
+            current.status ==
+                ACCOUNT_ACTIVE) {
+
+            unlock_accounts_file(fd);
+            close(fd);
+
+            pthread_mutex_unlock(
+                &account_create_mutex
+            );
+
+            return STATUS_DUPLICATE;
+        }
+    }
+
+    AccountId account_id =
+        next_account_id_locked(fd);
+
+    if (account_id <= 0) {
+
+        unlock_accounts_file(fd);
+        close(fd);
+
+        pthread_mutex_unlock(
+            &account_create_mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    AccountRecord account;
+
+    memset(
+        &account,
+        0,
+        sizeof(account)
+    );
+
+    account.account_id =
+        account_id;
+
+    account.user_id =
+        customer_user_id;
+
+    account.balance =
+        initial_balance;
+
+    account.status =
+        ACCOUNT_ACTIVE;
+
+    if (account_timestamp(
+            account.created_at,
+            sizeof(account.created_at)) == -1) {
+
+        unlock_accounts_file(fd);
+        close(fd);
+
+        pthread_mutex_unlock(
+            &account_create_mutex
+        );
+
+        return STATUS_INTERNAL_ERROR;
+    }
+
+    char record[
+        ACCOUNT_RECORD_SIZE + 1
+    ];
+
+    if (format_account_record(
+            &account,
+            record,
+            sizeof(record)) == -1) {
+
+        unlock_accounts_file(fd);
+        close(fd);
+
+        pthread_mutex_unlock(
+            &account_create_mutex
+        );
+
+        return STATUS_INTERNAL_ERROR;
+    }
+
+    /*
+     * Save the old file size so the append
+     * can be rolled back if transaction
+     * logging fails.
+     */
+    off_t original_size =
+        info.st_size;
+
+    if (lseek(
+            fd,
+            0,
+            SEEK_END) == -1 ||
+        write(
+            fd,
+            record,
+            ACCOUNT_RECORD_SIZE) !=
+            ACCOUNT_RECORD_SIZE ||
+        fsync(fd) == -1) {
+
+        ftruncate(
+            fd,
+            original_size
+        );
+
+        fsync(fd);
+
+        unlock_accounts_file(fd);
+        close(fd);
+
+        pthread_mutex_unlock(
+            &account_create_mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    /*
+     * If there is an opening deposit,
+     * create a transaction record.
+     */
+    if (initial_balance > 0) {
+
+        TransactionId transaction_id;
+
+        OperationStatus status =
+            append_transaction(
+                account.account_id,
+                TXN_DEPOSIT,
+                initial_balance,
+                initial_balance,
+                "Initial account deposit",
+                performed_by,
+                0,
+                &transaction_id
+            );
+
+        if (status != STATUS_OK) {
+
+            /*
+             * Remove the newly appended
+             * account record.
+             */
+            ftruncate(
+                fd,
+                original_size
+            );
+
+            fsync(fd);
+
+            unlock_accounts_file(fd);
+            close(fd);
+
+            pthread_mutex_unlock(
+                &account_create_mutex
+            );
+
+            return STATUS_STORAGE_ERROR;
+        }
+    }
+
+    *created_account =
+        account;
+
+    unlock_accounts_file(fd);
+
+    close(fd);
+
+    pthread_mutex_unlock(
+        &account_create_mutex
+    );
+
+    return STATUS_OK;
+}
+
+OperationStatus find_account_by_user_any_status(
+    UserId user_id,
+    AccountRecord *account)
+{
+    if (user_id <= 0 ||
+        account == NULL) {
+
+        return STATUS_INVALID_INPUT;
+    }
+
+    FILE *file =
+        fopen(
+            ACCOUNTS_FILE,
+            "r"
+        );
+
+    if (file == NULL)
+        return STATUS_STORAGE_ERROR;
+
+    char line[
+        ACCOUNT_LINE_SIZE
+    ];
+
+    while (fgets(
+               line,
+               sizeof(line),
+               file) != NULL) {
+
+        AccountRecord current;
+
+        if (parse_account_line(
+                line,
+                &current) != 0) {
+
+            continue;
+        }
+
+        if (current.user_id ==
+            user_id) {
+
+            *account =
+                current;
+
+            fclose(file);
+
+            return STATUS_OK;
+        }
+    }
+
+    if (ferror(file)) {
+
+        fclose(file);
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    fclose(file);
+
+    return STATUS_NOT_FOUND;
+}
+
+OperationStatus close_customer_account(
+    AccountId account_id,
+    AccountRecord *closed_account)
+{
+    if (account_id <= 0 ||
+        closed_account == NULL) {
+
+        return STATUS_INVALID_INPUT;
+    }
+
+    pthread_mutex_t *mutex =
+        mutex_for_account(
+            account_id
+        );
+
+    pthread_mutex_lock(
+        mutex
+    );
+
+    int fd =
+        open(
+            ACCOUNTS_FILE,
+            O_RDWR
+        );
+
+    if (fd == -1) {
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    off_t offset;
+
+    AccountRecord account;
+
+    int result =
+        find_record_by_account_id(
+            fd,
+            account_id,
+            &offset,
+            &account
+        );
+
+    if (result == 1) {
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_NOT_FOUND;
+    }
+
+    if (result != 0) {
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    if (lock_account_record(
+            fd,
+            offset) == -1) {
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    /*
+     * Re-read after obtaining the record lock.
+     */
+    char old_record[
+        ACCOUNT_RECORD_SIZE + 1
+    ];
+
+    if (pread(
+            fd,
+            old_record,
+            ACCOUNT_RECORD_SIZE,
+            offset) !=
+        ACCOUNT_RECORD_SIZE) {
+
+        unlock_account_record(
+            fd,
+            offset
+        );
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    old_record[
+        ACCOUNT_RECORD_SIZE
+    ] = '\0';
+
+    if (parse_account_line(
+            old_record,
+            &account) != 0) {
+
+        unlock_account_record(
+            fd,
+            offset
+        );
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    /*
+     * Already closed.
+     */
+    if (account.status ==
+        ACCOUNT_CLOSED) {
+
+        unlock_account_record(
+            fd,
+            offset
+        );
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_CONFLICT;
+    }
+
+    /*
+     * Important banking rule:
+     * account balance must be zero.
+     */
+    if (account.balance != 0) {
+
+        unlock_account_record(
+            fd,
+            offset
+        );
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_INSUFFICIENT_FUNDS;
+    }
+
+    account.status =
+        ACCOUNT_CLOSED;
+
+    char new_record[
+        ACCOUNT_RECORD_SIZE + 1
+    ];
+
+    if (format_account_record(
+            &account,
+            new_record,
+            sizeof(new_record)) == -1) {
+
+        unlock_account_record(
+            fd,
+            offset
+        );
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_INTERNAL_ERROR;
+    }
+
+    if (pwrite(
+            fd,
+            new_record,
+            ACCOUNT_RECORD_SIZE,
+            offset) !=
+            ACCOUNT_RECORD_SIZE ||
+        fsync(fd) == -1) {
+
+        /*
+         * Best-effort rollback.
+         */
+        pwrite(
+            fd,
+            old_record,
+            ACCOUNT_RECORD_SIZE,
+            offset
+        );
+
+        fsync(fd);
+
+        unlock_account_record(
+            fd,
+            offset
+        );
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    *closed_account =
+        account;
+
+    unlock_account_record(
+        fd,
+        offset
+    );
+
+    close(fd);
+
+    pthread_mutex_unlock(
+        mutex
+    );
+
+    return STATUS_OK;
 }

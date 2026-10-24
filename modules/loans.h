@@ -66,4 +66,17 @@ const char *loan_status_name(
     LoanStatus status
 );
 
+OperationStatus get_assigned_loans(
+    UserId employee_id,
+    char *output,
+    size_t output_size
+);
+
+OperationStatus decide_assigned_loan(
+    LoanId loan_id,
+    UserId employee_id,
+    int approve,
+    LoanRecord *updated_loan
+);
+
 #endif

@@ -17,6 +17,7 @@
 #include "transactions.h"
 #include "loans.h"
 #include "feedback.h"
+#include "users.h"
 
 #define BUFFER_SIZE (PROTOCOL_MAX_MESSAGE + 1U)
 
@@ -358,6 +359,743 @@ static int parse_change_password_request(
     return 0;
 }
 
+static int parse_open_account_request(
+    const char *request,
+    UserId *customer_user_id,
+    Money *initial_balance)
+{
+    if (strncmp(
+            request,
+            "OPEN_ACCOUNT|",
+            13) != 0) {
+
+        return -1;
+    }
+
+    char copy[256];
+
+    if (strlen(request) >=
+        sizeof(copy)) {
+
+        return -1;
+    }
+
+    strcpy(
+        copy,
+        request + 13
+    );
+
+    char *separator =
+        strchr(copy, '|');
+
+    if (separator == NULL)
+        return -1;
+
+    *separator =
+        '\0';
+
+    if (strchr(
+            separator + 1,
+            '|') != NULL) {
+
+        return -1;
+    }
+
+    errno = 0;
+
+    char *end = NULL;
+
+    long long user_id =
+        strtoll(
+            copy,
+            &end,
+            10
+        );
+
+    if (errno != 0 ||
+        end == copy ||
+        *end != '\0' ||
+        user_id <= 0 ||
+        user_id >
+            9999999999LL) {
+
+        return -1;
+    }
+
+    errno = 0;
+    end = NULL;
+
+    long long balance =
+        strtoll(
+            separator + 1,
+            &end,
+            10
+        );
+
+    if (errno != 0 ||
+        end == separator + 1 ||
+        *end != '\0' ||
+        balance < 0 ||
+        balance >
+            MAX_TRANSACTION_PAISE) {
+
+        return -1;
+    }
+
+    *customer_user_id =
+        (UserId)user_id;
+
+    *initial_balance =
+        (Money)balance;
+
+    return 0;
+}
+
+static const char *account_status_name(
+    AccountStatus status)
+{
+    switch (status) {
+
+        case ACCOUNT_ACTIVE:
+            return "ACTIVE";
+
+        case ACCOUNT_INACTIVE:
+            return "INACTIVE";
+
+        case ACCOUNT_CLOSED:
+            return "CLOSED";
+
+        default:
+            return "UNKNOWN";
+    }
+}
+
+static int parse_view_account_request(
+    const char *request,
+    int *lookup_type,
+    long long *lookup_value)
+{
+    if (strncmp(
+            request,
+            "VIEW_ACCOUNT|",
+            13) != 0) {
+
+        return -1;
+    }
+
+    char copy[256];
+
+    if (strlen(request) >=
+        sizeof(copy)) {
+
+        return -1;
+    }
+
+    strcpy(
+        copy,
+        request + 13
+    );
+
+    char *separator =
+        strchr(
+            copy,
+            '|'
+        );
+
+    if (separator == NULL)
+        return -1;
+
+    *separator =
+        '\0';
+
+    if (strchr(
+            separator + 1,
+            '|') != NULL) {
+
+        return -1;
+    }
+
+    if (strcmp(
+            copy,
+            "ACCOUNT") == 0) {
+
+        *lookup_type = 1;
+
+    } else if (strcmp(
+                   copy,
+                   "USER") == 0) {
+
+        *lookup_type = 2;
+
+    } else {
+
+        return -1;
+    }
+
+    errno = 0;
+
+    char *end = NULL;
+
+    long long value =
+        strtoll(
+            separator + 1,
+            &end,
+            10
+        );
+
+    if (errno != 0 ||
+        end == separator + 1 ||
+        *end != '\0' ||
+        value <= 0) {
+
+        return -1;
+    }
+
+    *lookup_value =
+        value;
+
+    return 0;
+}
+
+static int parse_modify_customer_request(
+    const char *request,
+    UserId *user_id,
+    char *new_name,
+    size_t name_size)
+{
+    const char prefix[] =
+        "MODIFY_CUSTOMER|";
+
+    if (strncmp(
+            request,
+            prefix,
+            strlen(prefix)) != 0) {
+
+        return -1;
+    }
+
+    const char *start =
+        request +
+        strlen(prefix);
+
+    const char *separator =
+        strchr(
+            start,
+            '|'
+        );
+
+    if (separator == NULL)
+        return -1;
+
+    if (strchr(
+            separator + 1,
+            '|') != NULL) {
+
+        return -1;
+    }
+
+    size_t id_length =
+        (size_t)
+            (separator - start);
+
+    size_t name_length =
+        strlen(
+            separator + 1
+        );
+
+    if (id_length == 0 ||
+        id_length >= 32 ||
+        name_length == 0 ||
+        name_length >=
+            name_size) {
+
+        return -1;
+    }
+
+    char id_text[32];
+
+    memcpy(
+        id_text,
+        start,
+        id_length
+    );
+
+    id_text[
+        id_length
+    ] = '\0';
+
+    errno = 0;
+
+    char *end = NULL;
+
+    long long parsed_id =
+        strtoll(
+            id_text,
+            &end,
+            10
+        );
+
+    if (errno != 0 ||
+        end == id_text ||
+        *end != '\0' ||
+        parsed_id <= 0) {
+
+        return -1;
+    }
+
+    strcpy(
+        new_name,
+        separator + 1
+    );
+
+    *user_id =
+        (UserId)parsed_id;
+
+    return 0;
+}
+
+static int parse_add_customer_request(
+    const char *request,
+    char *username,
+    size_t username_size,
+    char *password,
+    size_t password_size,
+    char *full_name,
+    size_t name_size,
+    Money *initial_balance)
+{
+    const char prefix[] =
+        "ADD_CUSTOMER|";
+
+    if (strncmp(
+            request,
+            prefix,
+            strlen(prefix)) != 0) {
+
+        return -1;
+    }
+
+    char copy[
+        MAX_REQUEST_SIZE
+    ];
+
+    if (strlen(request) >=
+        sizeof(copy)) {
+
+        return -1;
+    }
+
+    strcpy(
+        copy,
+        request +
+            strlen(prefix)
+    );
+
+    char *saveptr = NULL;
+
+    char *username_field =
+        strtok_r(
+            copy,
+            "|",
+            &saveptr
+        );
+
+    char *password_field =
+        strtok_r(
+            NULL,
+            "|",
+            &saveptr
+        );
+
+    char *name_field =
+        strtok_r(
+            NULL,
+            "|",
+            &saveptr
+        );
+
+    char *balance_field =
+        strtok_r(
+            NULL,
+            "|",
+            &saveptr
+        );
+
+    if (username_field == NULL ||
+        password_field == NULL ||
+        name_field == NULL ||
+        balance_field == NULL ||
+        strtok_r(
+            NULL,
+            "|",
+            &saveptr) != NULL) {
+
+        return -1;
+    }
+
+    if (strlen(username_field) == 0 ||
+        strlen(username_field) >=
+            username_size ||
+        strlen(password_field) < 8 ||
+        strlen(password_field) >=
+            password_size ||
+        strlen(name_field) == 0 ||
+        strlen(name_field) >=
+            name_size) {
+
+        return -1;
+    }
+
+    errno = 0;
+
+    char *end = NULL;
+
+    long long balance =
+        strtoll(
+            balance_field,
+            &end,
+            10
+        );
+
+    if (errno != 0 ||
+        end == balance_field ||
+        *end != '\0' ||
+        balance < 0 ||
+        balance >
+            MAX_TRANSACTION_PAISE) {
+
+        return -1;
+    }
+
+    strcpy(
+        username,
+        username_field
+    );
+
+    strcpy(
+        password,
+        password_field
+    );
+
+    strcpy(
+        full_name,
+        name_field
+    );
+
+    *initial_balance =
+        (Money)balance;
+
+    return 0;
+}
+
+static int parse_close_account_request(
+    const char *request,
+    AccountId *account_id)
+{
+    const char prefix[] =
+        "CLOSE_ACCOUNT|";
+
+    if (strncmp(
+            request,
+            prefix,
+            strlen(prefix)) != 0) {
+
+        return -1;
+    }
+
+    const char *value =
+        request +
+        strlen(prefix);
+
+    if (value[0] == '\0' ||
+        strchr(value, '|') != NULL) {
+
+        return -1;
+    }
+
+    errno = 0;
+
+    char *end = NULL;
+
+    long long parsed =
+        strtoll(
+            value,
+            &end,
+            10
+        );
+
+    if (errno != 0 ||
+        end == value ||
+        *end != '\0' ||
+        parsed <= 0) {
+
+        return -1;
+    }
+
+    *account_id =
+        (AccountId)parsed;
+
+    return 0;
+}
+
+static int parse_customer_transactions_request(
+    const char *request,
+    int *lookup_type,
+    long long *lookup_value)
+{
+    const char prefix[] =
+        "VIEW_CUSTOMER_TXNS|";
+
+    if (strncmp(
+            request,
+            prefix,
+            strlen(prefix)) != 0) {
+
+        return -1;
+    }
+
+    char copy[256];
+
+    if (strlen(request) >=
+        sizeof(copy)) {
+
+        return -1;
+    }
+
+    strcpy(
+        copy,
+        request +
+            strlen(prefix)
+    );
+
+    char *separator =
+        strchr(
+            copy,
+            '|'
+        );
+
+    if (separator == NULL)
+        return -1;
+
+    *separator =
+        '\0';
+
+    if (strchr(
+            separator + 1,
+            '|') != NULL) {
+
+        return -1;
+    }
+
+    if (strcmp(
+            copy,
+            "ACCOUNT") == 0) {
+
+        *lookup_type = 1;
+
+    } else if (strcmp(
+                   copy,
+                   "USER") == 0) {
+
+        *lookup_type = 2;
+
+    } else {
+
+        return -1;
+    }
+
+    errno = 0;
+
+    char *end = NULL;
+
+    long long value =
+        strtoll(
+            separator + 1,
+            &end,
+            10
+        );
+
+    if (errno != 0 ||
+        end == separator + 1 ||
+        *end != '\0' ||
+        value <= 0) {
+
+        return -1;
+    }
+
+    *lookup_value =
+        value;
+
+    return 0;
+}
+
+static int parse_loan_decision_request(
+    const char *request,
+    LoanId *loan_id,
+    int *approve)
+{
+    const char prefix[] =
+        "DECIDE_LOAN|";
+
+    if (strncmp(
+            request,
+            prefix,
+            strlen(prefix)) != 0) {
+
+        return -1;
+    }
+
+    char copy[128];
+
+    if (strlen(request) >=
+        sizeof(copy)) {
+
+        return -1;
+    }
+
+    strcpy(
+        copy,
+        request +
+            strlen(prefix)
+    );
+
+    char *separator =
+        strchr(
+            copy,
+            '|'
+        );
+
+    if (separator == NULL)
+        return -1;
+
+    *separator =
+        '\0';
+
+    if (strchr(
+            separator + 1,
+            '|') != NULL) {
+
+        return -1;
+    }
+
+    errno = 0;
+
+    char *end = NULL;
+
+    long long id =
+        strtoll(
+            copy,
+            &end,
+            10
+        );
+
+    if (errno != 0 ||
+        end == copy ||
+        *end != '\0' ||
+        id <= 0) {
+
+        return -1;
+    }
+
+    if (strcmp(
+            separator + 1,
+            "APPROVE") == 0) {
+
+        *approve = 1;
+
+    } else if (strcmp(
+                   separator + 1,
+                   "REJECT") == 0) {
+
+        *approve = 0;
+
+    } else {
+
+        return -1;
+    }
+
+    *loan_id =
+        (LoanId)id;
+
+    return 0;
+}
+
+static int parse_employee_change_password_request(
+    const char *request,
+    char *current_password,
+    size_t current_size,
+    char *new_password,
+    size_t new_size)
+{
+    const char prefix[] =
+        "EMP_CHANGE_PASSWORD|";
+
+    if (strncmp(
+            request,
+            prefix,
+            strlen(prefix)) != 0) {
+
+        return -1;
+    }
+
+    char copy[
+        MAX_REQUEST_SIZE
+    ];
+
+    if (strlen(request) >=
+        sizeof(copy)) {
+
+        return -1;
+    }
+
+    strcpy(
+        copy,
+        request +
+            strlen(prefix)
+    );
+
+    char *separator =
+        strchr(
+            copy,
+            '|'
+        );
+
+    if (separator == NULL)
+        return -1;
+
+    *separator =
+        '\0';
+
+    if (strchr(
+            separator + 1,
+            '|') != NULL) {
+
+        return -1;
+    }
+
+    if (copy[0] == '\0' ||
+        separator[1] == '\0' ||
+        strlen(copy) >=
+            current_size ||
+        strlen(separator + 1) >=
+            new_size) {
+
+        return -1;
+    }
+
+    strcpy(
+        current_password,
+        copy
+    );
+
+    strcpy(
+        new_password,
+        separator + 1
+    );
+
+    return 0;
+}
+
 static int process_request(
     int client_fd,
     const char *request)
@@ -531,16 +1269,1202 @@ static int process_request(
         return 0;
     }
 
+
+/* Employee commands */
+
+    //open account
+
+    if (strncmp(
+        request,
+        "OPEN_ACCOUNT|",
+        13) == 0) {
+
     if (session.role !=
-        ROLE_CUSTOMER) {
+        ROLE_EMPLOYEE) {
 
         send_message(
             client_fd,
-            "ERROR|PERMISSION_DENIED"
+            "OPEN_ACCOUNT_FAILED|PERMISSION_DENIED"
         );
 
         return 0;
     }
+
+    UserId customer_user_id;
+    Money initial_balance;
+
+    if (parse_open_account_request(
+            request,
+            &customer_user_id,
+            &initial_balance) == -1) {
+
+        send_message(
+            client_fd,
+            "OPEN_ACCOUNT_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    /*
+     * Verify that this is an existing,
+     * active CUSTOMER user.
+     */
+    UserRecord customer;
+
+    OperationStatus status =
+        find_user_by_id(
+            customer_user_id,
+            &customer
+        );
+
+    if (status ==
+        STATUS_NOT_FOUND) {
+
+        send_message(
+            client_fd,
+            "OPEN_ACCOUNT_FAILED|USER_NOT_FOUND"
+        );
+
+        return 0;
+    }
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "OPEN_ACCOUNT_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    if (!customer.active) {
+
+        send_message(
+            client_fd,
+            "OPEN_ACCOUNT_FAILED|USER_INACTIVE"
+        );
+
+        return 0;
+    }
+
+    if (customer.role !=
+        ROLE_CUSTOMER) {
+
+        send_message(
+            client_fd,
+            "OPEN_ACCOUNT_FAILED|NOT_CUSTOMER"
+        );
+
+        return 0;
+    }
+
+    AccountRecord account;
+
+    status =
+        open_customer_account(
+            customer_user_id,
+            initial_balance,
+            session.user_id,
+            &account
+        );
+
+    if (status ==
+        STATUS_DUPLICATE) {
+
+        send_message(
+            client_fd,
+            "OPEN_ACCOUNT_FAILED|ACTIVE_ACCOUNT_EXISTS"
+        );
+
+        return 0;
+    }
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "OPEN_ACCOUNT_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    char response[512];
+
+    int written =
+        snprintf(
+            response,
+            sizeof(response),
+
+            "OPEN_ACCOUNT_OK|%lld|%lld|%lld|%s",
+
+            (long long)
+                account.account_id,
+
+            (long long)
+                account.user_id,
+
+            (long long)
+                account.balance,
+
+            account.created_at
+        );
+
+    if (written < 0 ||
+        (size_t)written >=
+            sizeof(response)) {
+
+        send_message(
+            client_fd,
+            "OPEN_ACCOUNT_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+	send_message(
+       		 client_fd,
+       		 response
+   	 );
+
+    return 0;
+}
+
+	//add customer
+if (strncmp(
+        request,
+        "ADD_CUSTOMER|",
+        13) == 0) {
+
+    if (session.role !=
+        ROLE_EMPLOYEE) {
+
+        send_message(
+            client_fd,
+            "ADD_CUSTOMER_FAILED|PERMISSION_DENIED"
+        );
+
+        return 0;
+    }
+
+    char username[
+        MAX_USERNAME_LEN + 1
+    ];
+
+    char password[
+        MAX_PASSWORD_LEN + 1
+    ];
+
+    char full_name[
+        MAX_NAME_LEN + 1
+    ];
+
+    Money initial_balance;
+
+    if (parse_add_customer_request(
+            request,
+            username,
+            sizeof(username),
+            password,
+            sizeof(password),
+            full_name,
+            sizeof(full_name),
+            &initial_balance) == -1) {
+
+        send_message(
+            client_fd,
+            "ADD_CUSTOMER_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    char password_hash[
+        MAX_PASSWORD_HASH_LEN
+    ];
+
+    OperationStatus status =
+        generate_password_hash(
+            password,
+            password_hash,
+            sizeof(password_hash)
+        );
+
+    /*
+     * Plaintext password is no longer needed.
+     */
+    memset(
+        password,
+        0,
+        sizeof(password)
+    );
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "ADD_CUSTOMER_FAILED|PASSWORD_ERROR"
+        );
+
+        return 0;
+    }
+
+    UserRecord customer;
+
+    status =
+        create_user_record(
+            username,
+            password_hash,
+            ROLE_CUSTOMER,
+            1,
+            full_name,
+            &customer
+        );
+
+    memset(
+        password_hash,
+        0,
+        sizeof(password_hash)
+    );
+
+    if (status ==
+        STATUS_DUPLICATE) {
+
+        send_message(
+            client_fd,
+            "ADD_CUSTOMER_FAILED|USERNAME_EXISTS"
+        );
+
+        return 0;
+    }
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "ADD_CUSTOMER_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    AccountRecord account;
+
+    status =
+        open_customer_account(
+            customer.user_id,
+            initial_balance,
+            session.user_id,
+            &account
+        );
+
+    if (status != STATUS_OK) {
+
+        /*
+         * Customer login was created but account
+         * creation failed. Remove the login again.
+         */
+        delete_user_by_id(
+            customer.user_id
+        );
+
+        send_message(
+            client_fd,
+            "ADD_CUSTOMER_FAILED|ACCOUNT_CREATION_FAILED"
+        );
+
+        return 0;
+    }
+
+    char response[512];
+
+    int written =
+        snprintf(
+            response,
+            sizeof(response),
+
+            "ADD_CUSTOMER_OK|%lld|%s|%lld|%lld",
+
+            (long long)
+                customer.user_id,
+
+            customer.username,
+
+            (long long)
+                account.account_id,
+
+            (long long)
+                account.balance
+        );
+
+    if (written < 0 ||
+        (size_t)written >=
+            sizeof(response)) {
+
+        send_message(
+            client_fd,
+            "ADD_CUSTOMER_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    send_message(
+        client_fd,
+        response
+    );
+
+    return 0;
+}
+
+    //view account
+
+    if (strncmp(
+        request,
+        "VIEW_ACCOUNT|",
+        13) == 0) {
+
+    if (session.role !=
+        ROLE_EMPLOYEE) {
+
+        send_message(
+            client_fd,
+            "VIEW_ACCOUNT_FAILED|PERMISSION_DENIED"
+        );
+
+        return 0;
+    }
+
+    int lookup_type;
+    long long lookup_value;
+
+    if (parse_view_account_request(
+            request,
+            &lookup_type,
+            &lookup_value) == -1) {
+
+        send_message(
+            client_fd,
+            "VIEW_ACCOUNT_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    AccountRecord account;
+
+    OperationStatus status;
+
+    if (lookup_type == 1) {
+
+        status =
+            find_account_by_id(
+                (AccountId)
+                    lookup_value,
+                &account
+            );
+
+    } else {
+
+        status =
+            find_account_by_user_any_status(
+                (UserId)
+                    lookup_value,
+                &account
+            );
+    }
+
+    if (status ==
+        STATUS_NOT_FOUND) {
+
+        send_message(
+            client_fd,
+            "VIEW_ACCOUNT_FAILED|NOT_FOUND"
+        );
+
+        return 0;
+    }
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "VIEW_ACCOUNT_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    UserRecord customer;
+
+    status =
+        find_user_by_id(
+            account.user_id,
+            &customer
+        );
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "VIEW_ACCOUNT_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    char response[1024];
+
+    int written =
+        snprintf(
+            response,
+            sizeof(response),
+
+            "VIEW_ACCOUNT_OK|%lld|%lld|%s|%lld|%s|%s",
+
+            (long long)
+                account.account_id,
+
+            (long long)
+                account.user_id,
+
+            customer.full_name,
+
+            (long long)
+                account.balance,
+
+            account_status_name(
+                account.status
+            ),
+
+            account.created_at
+        );
+
+    if (written < 0 ||
+        (size_t)written >=
+            sizeof(response)) {
+
+        send_message(
+            client_fd,
+            "VIEW_ACCOUNT_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    send_message(
+        client_fd,
+        response
+    );
+
+    return 0;
+}
+
+	//modify account details
+if (strncmp(
+        request,
+        "MODIFY_CUSTOMER|",
+        16) == 0) {
+
+    if (session.role !=
+        ROLE_EMPLOYEE) {
+
+        send_message(
+            client_fd,
+            "MODIFY_CUSTOMER_FAILED|PERMISSION_DENIED"
+        );
+
+        return 0;
+    }
+
+    UserId customer_user_id;
+
+    char new_name[
+        MAX_NAME_LEN + 1
+    ];
+
+    if (parse_modify_customer_request(
+            request,
+            &customer_user_id,
+            new_name,
+            sizeof(new_name)) == -1) {
+
+        send_message(
+            client_fd,
+            "MODIFY_CUSTOMER_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    /*
+     * First verify that the target really
+     * is a CUSTOMER.
+     */
+    UserRecord customer;
+
+    OperationStatus status =
+        find_user_by_id(
+            customer_user_id,
+            &customer
+        );
+
+    if (status ==
+        STATUS_NOT_FOUND) {
+
+        send_message(
+            client_fd,
+            "MODIFY_CUSTOMER_FAILED|USER_NOT_FOUND"
+        );
+
+        return 0;
+    }
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "MODIFY_CUSTOMER_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    if (customer.role !=
+        ROLE_CUSTOMER) {
+
+        send_message(
+            client_fd,
+            "MODIFY_CUSTOMER_FAILED|NOT_CUSTOMER"
+        );
+
+        return 0;
+    }
+
+    status =
+        update_user_full_name(
+            customer_user_id,
+            new_name
+        );
+
+    if (status ==
+        STATUS_INVALID_INPUT) {
+
+        send_message(
+            client_fd,
+            "MODIFY_CUSTOMER_FAILED|INVALID_NAME"
+        );
+
+        return 0;
+    }
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "MODIFY_CUSTOMER_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    char response[
+        MAX_NAME_LEN + 128
+    ];
+
+    snprintf(
+        response,
+        sizeof(response),
+        "MODIFY_CUSTOMER_OK|%lld|%s",
+        (long long)
+            customer_user_id,
+        new_name
+    );
+
+    send_message(
+        client_fd,
+        response
+    );
+
+    return 0;
+}
+
+//close account
+if (strncmp(
+        request,
+        "CLOSE_ACCOUNT|",
+        14) == 0) {
+
+    if (session.role !=
+        ROLE_EMPLOYEE) {
+
+        send_message(
+            client_fd,
+            "CLOSE_ACCOUNT_FAILED|PERMISSION_DENIED"
+        );
+
+        return 0;
+    }
+
+    AccountId account_id;
+
+    if (parse_close_account_request(
+            request,
+            &account_id) == -1) {
+
+        send_message(
+            client_fd,
+            "CLOSE_ACCOUNT_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    AccountRecord account;
+
+    OperationStatus status =
+        close_customer_account(
+            account_id,
+            &account
+        );
+
+    if (status ==
+        STATUS_NOT_FOUND) {
+
+        send_message(
+            client_fd,
+            "CLOSE_ACCOUNT_FAILED|NOT_FOUND"
+        );
+
+        return 0;
+    }
+
+    if (status ==
+        STATUS_INSUFFICIENT_FUNDS) {
+
+        send_message(
+            client_fd,
+            "CLOSE_ACCOUNT_FAILED|NONZERO_BALANCE"
+        );
+
+        return 0;
+    }
+
+    if (status ==
+        STATUS_CONFLICT) {
+
+        send_message(
+            client_fd,
+            "CLOSE_ACCOUNT_FAILED|ALREADY_CLOSED"
+        );
+
+        return 0;
+    }
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "CLOSE_ACCOUNT_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    char response[256];
+
+    snprintf(
+        response,
+        sizeof(response),
+        "CLOSE_ACCOUNT_OK|%lld|%lld",
+        (long long)
+            account.account_id,
+        (long long)
+            account.user_id
+    );
+
+    send_message(
+        client_fd,
+        response
+    );
+
+    return 0;
+}
+
+//view customer history
+
+if (strncmp(
+        request,
+        "VIEW_CUSTOMER_TXNS|",
+        19) == 0) {
+
+    if (session.role !=
+        ROLE_EMPLOYEE) {
+
+        send_message(
+            client_fd,
+            "CUSTOMER_TXNS_FAILED|PERMISSION_DENIED"
+        );
+
+        return 0;
+    }
+
+    int lookup_type;
+    long long lookup_value;
+
+    if (parse_customer_transactions_request(
+            request,
+            &lookup_type,
+            &lookup_value) == -1) {
+
+        send_message(
+            client_fd,
+            "CUSTOMER_TXNS_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    AccountRecord account;
+
+    OperationStatus status;
+
+    if (lookup_type == 1) {
+
+        status =
+            find_account_by_id(
+                (AccountId)
+                    lookup_value,
+                &account
+            );
+
+    } else {
+
+        status =
+            find_account_by_user_any_status(
+                (UserId)
+                    lookup_value,
+                &account
+            );
+    }
+
+    if (status ==
+        STATUS_NOT_FOUND) {
+
+        send_message(
+            client_fd,
+            "CUSTOMER_TXNS_FAILED|ACCOUNT_NOT_FOUND"
+        );
+
+        return 0;
+    }
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "CUSTOMER_TXNS_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    UserRecord customer;
+
+    status =
+        find_user_by_id(
+            account.user_id,
+            &customer
+        );
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "CUSTOMER_TXNS_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    char history[
+        MAX_RESPONSE_SIZE
+    ];
+
+    status =
+        get_account_transaction_history(
+            account.account_id,
+            history,
+            sizeof(history)
+        );
+
+    if (status ==
+        STATUS_NOT_FOUND) {
+
+        char response[512];
+
+        snprintf(
+            response,
+            sizeof(response),
+            "CUSTOMER_TXNS_EMPTY|%lld|%lld|%s",
+            (long long)
+                account.account_id,
+            (long long)
+                account.user_id,
+            customer.full_name
+        );
+
+        send_message(
+            client_fd,
+            response
+        );
+
+        return 0;
+    }
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "CUSTOMER_TXNS_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    char response[
+        MAX_RESPONSE_SIZE
+    ];
+
+    int written =
+        snprintf(
+            response,
+            sizeof(response),
+
+            "CUSTOMER_TXNS_OK|%lld|%lld|%s|%s",
+
+            (long long)
+                account.account_id,
+
+            (long long)
+                account.user_id,
+
+            customer.full_name,
+
+            history
+        );
+
+    if (written < 0 ||
+        (size_t)written >=
+            sizeof(response)) {
+
+        send_message(
+            client_fd,
+            "CUSTOMER_TXNS_FAILED|TOO_LARGE"
+        );
+
+        return 0;
+    }
+
+    send_message(
+        client_fd,
+        response
+    );
+
+    return 0;
+}
+
+//view assigned loans
+if (strcmp(
+        request,
+        "VIEW_ASSIGNED_LOANS") == 0) {
+
+    if (session.role !=
+        ROLE_EMPLOYEE) {
+
+        send_message(
+            client_fd,
+            "ASSIGNED_LOANS_FAILED|PERMISSION_DENIED"
+        );
+
+        return 0;
+    }
+
+    char loans[
+        MAX_RESPONSE_SIZE
+    ];
+
+    OperationStatus status =
+        get_assigned_loans(
+            session.user_id,
+            loans,
+            sizeof(loans)
+        );
+
+    if (status ==
+        STATUS_NOT_FOUND) {
+
+        send_message(
+            client_fd,
+            "ASSIGNED_LOANS_EMPTY"
+        );
+
+        return 0;
+    }
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "ASSIGNED_LOANS_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    char response[
+        MAX_RESPONSE_SIZE
+    ];
+
+    int written =
+        snprintf(
+            response,
+            sizeof(response),
+            "ASSIGNED_LOANS_OK|%s",
+            loans
+        );
+
+    if (written < 0 ||
+        (size_t)written >=
+            sizeof(response)) {
+
+        send_message(
+            client_fd,
+            "ASSIGNED_LOANS_FAILED|TOO_LARGE"
+        );
+
+        return 0;
+    }
+
+    send_message(
+        client_fd,
+        response
+    );
+
+    return 0;
+}
+
+//approve or reject loans
+if (strncmp(
+        request,
+        "DECIDE_LOAN|",
+        12) == 0) {
+
+    if (session.role !=
+        ROLE_EMPLOYEE) {
+
+        send_message(
+            client_fd,
+            "LOAN_DECISION_FAILED|PERMISSION_DENIED"
+        );
+
+        return 0;
+    }
+
+    LoanId loan_id;
+    int approve;
+
+    if (parse_loan_decision_request(
+            request,
+            &loan_id,
+            &approve) == -1) {
+
+        send_message(
+            client_fd,
+            "LOAN_DECISION_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    LoanRecord loan;
+
+    OperationStatus status =
+        decide_assigned_loan(
+            loan_id,
+            session.user_id,
+            approve,
+            &loan
+        );
+
+    if (status ==
+        STATUS_NOT_FOUND) {
+
+        send_message(
+            client_fd,
+            "LOAN_DECISION_FAILED|NOT_FOUND"
+        );
+
+        return 0;
+    }
+
+    if (status ==
+        STATUS_PERMISSION_DENIED) {
+
+        send_message(
+            client_fd,
+            "LOAN_DECISION_FAILED|NOT_ASSIGNED"
+        );
+
+        return 0;
+    }
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "LOAN_DECISION_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    char response[256];
+
+    snprintf(
+        response,
+        sizeof(response),
+        "LOAN_DECISION_OK|%lld|%s",
+        (long long)
+            loan.loan_id,
+        approve
+            ? "APPROVED"
+            : "REJECTED"
+    );
+
+    send_message(
+        client_fd,
+        response
+    );
+
+    return 0;
+}
+
+//change password
+if (strncmp(
+        request,
+        "EMP_CHANGE_PASSWORD|",
+        20) == 0) {
+
+    if (session.role !=
+        ROLE_EMPLOYEE) {
+
+        send_message(
+            client_fd,
+            "EMP_PASSWORD_FAILED|PERMISSION_DENIED"
+        );
+
+        return 0;
+    }
+
+    char current_password[
+        MAX_PASSWORD_LEN + 1
+    ];
+
+    char new_password[
+        MAX_PASSWORD_LEN + 1
+    ];
+
+    if (parse_employee_change_password_request(
+            request,
+            current_password,
+            sizeof(current_password),
+            new_password,
+            sizeof(new_password)) == -1) {
+
+        send_message(
+            client_fd,
+            "EMP_PASSWORD_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    OperationStatus status =
+        change_user_password(
+            session.user_id,
+            current_password,
+            new_password
+        );
+
+    /*
+     * Plaintext passwords no longer needed.
+     */
+    memset(
+        current_password,
+        0,
+        sizeof(current_password)
+    );
+
+    memset(
+        new_password,
+        0,
+        sizeof(new_password)
+    );
+
+    if (status ==
+        STATUS_PERMISSION_DENIED) {
+
+        send_message(
+            client_fd,
+            "EMP_PASSWORD_FAILED|INCORRECT_CURRENT_PASSWORD"
+        );
+
+        return 0;
+    }
+
+    if (status ==
+        STATUS_CONFLICT) {
+
+        send_message(
+            client_fd,
+            "EMP_PASSWORD_FAILED|SAME_PASSWORD"
+        );
+
+        return 0;
+    }
+
+    if (status ==
+        STATUS_INVALID_INPUT) {
+
+        send_message(
+            client_fd,
+            "EMP_PASSWORD_FAILED|INVALID_PASSWORD"
+        );
+
+        return 0;
+    }
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "EMP_PASSWORD_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    send_message(
+        client_fd,
+        "EMP_PASSWORD_OK"
+    );
+
+    return 0;
+}
+
+/* Customer commands */
 
     if (strcmp(request,
                "VIEW_BALANCE") == 0) {
@@ -1438,3 +3362,4 @@ int main(void)
         pthread_detach(thread);
     }
 }
+

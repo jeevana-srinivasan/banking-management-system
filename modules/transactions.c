@@ -707,3 +707,15 @@ OperationStatus get_transaction_history(
 
     return STATUS_OK;
 }
+
+OperationStatus get_account_transaction_history(
+    AccountId account_id,
+    char *output,
+    size_t output_size)
+{
+    return get_transaction_history(
+        account_id,
+        output,
+        output_size
+    );
+}
