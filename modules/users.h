@@ -55,4 +55,9 @@ OperationStatus delete_user_by_id(
     UserId user_id
 );
 
+OperationStatus update_user_role(
+    UserId user_id,
+    UserRole new_role
+);
+
 #endif

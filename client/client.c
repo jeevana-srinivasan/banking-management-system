@@ -4317,6 +4317,1196 @@ static int manager_loop(
 }
 
 
+//admin functions
+static int admin_add_employee(
+    int sock_fd)
+{
+    char full_name[
+        MAX_NAME_LEN + 1
+    ];
+
+    char username[
+        MAX_USERNAME_LEN + 1
+    ];
+
+    char password[
+        MAX_PASSWORD_LEN + 1
+    ];
+
+    char confirm_password[
+        MAX_PASSWORD_LEN + 1
+    ];
+
+    if (read_line(
+            "Enter employee full name: ",
+            full_name,
+            sizeof(full_name)) == -1) {
+
+        return -1;
+    }
+
+    if (full_name[0] == '\0' ||
+        strchr(
+            full_name,
+            '|') != NULL) {
+
+        printf(
+            "\nInvalid employee name.\n"
+        );
+
+        return 0;
+    }
+
+    if (read_line(
+            "Enter username: ",
+            username,
+            sizeof(username)) == -1) {
+
+        return -1;
+    }
+
+    if (username[0] == '\0' ||
+        strchr(
+            username,
+            '|') != NULL) {
+
+        printf(
+            "\nInvalid username.\n"
+        );
+
+        return 0;
+    }
+
+    printf(
+        "Enter temporary "
+    );
+
+    if (read_password(
+            password,
+            sizeof(password)) == -1) {
+
+        return -1;
+    }
+
+    printf(
+        "Confirm temporary "
+    );
+
+    if (read_password(
+            confirm_password,
+            sizeof(confirm_password)) == -1) {
+
+        memset(
+            password,
+            0,
+            sizeof(password)
+        );
+
+        return -1;
+    }
+
+    if (strcmp(
+            password,
+            confirm_password) != 0) {
+
+        printf(
+            "\nPasswords do not match.\n"
+        );
+
+        memset(
+            password,
+            0,
+            sizeof(password)
+        );
+
+        memset(
+            confirm_password,
+            0,
+            sizeof(confirm_password)
+        );
+
+        return 0;
+    }
+
+    if (strlen(
+            password) < 8) {
+
+        printf(
+            "\nTemporary password must contain "
+            "at least 8 characters.\n"
+        );
+
+        memset(
+            password,
+            0,
+            sizeof(password)
+        );
+
+        memset(
+            confirm_password,
+            0,
+            sizeof(confirm_password)
+        );
+
+        return 0;
+    }
+
+    char request[
+        MAX_REQUEST_SIZE
+    ];
+
+    int written =
+        snprintf(
+            request,
+            sizeof(request),
+            "ADD_EMPLOYEE|%s|%s|%s",
+            username,
+            password,
+            full_name
+        );
+
+    memset(
+        password,
+        0,
+        sizeof(password)
+    );
+
+    memset(
+        confirm_password,
+        0,
+        sizeof(confirm_password)
+    );
+
+    if (written < 0 ||
+        (size_t)written >=
+            sizeof(request)) {
+
+        printf(
+            "\nRequest is too large.\n"
+        );
+
+        memset(
+            request,
+            0,
+            sizeof(request)
+        );
+
+        return 0;
+    }
+
+    char response[
+        MAX_RESPONSE_SIZE
+    ];
+
+    if (send_and_receive(
+            sock_fd,
+            request,
+            response,
+            sizeof(response)) == -1) {
+
+        memset(
+            request,
+            0,
+            sizeof(request)
+        );
+
+        return -1;
+    }
+
+    memset(
+        request,
+        0,
+        sizeof(request)
+    );
+
+    if (strcmp(
+            response,
+            "ADD_EMPLOYEE_FAILED|USERNAME_EXISTS") == 0) {
+
+        printf(
+            "\nThat username already exists.\n"
+        );
+
+        return 0;
+    }
+
+    if (strncmp(
+            response,
+            "ADD_EMPLOYEE_OK|",
+            16) == 0) {
+
+        long long user_id;
+
+        char created_username[
+            MAX_USERNAME_LEN + 1
+        ];
+
+        char created_name[
+            MAX_NAME_LEN + 1
+        ];
+
+        if (sscanf(
+                response,
+                "ADD_EMPLOYEE_OK|%lld|%32[^|]|%100[^\n]",
+                &user_id,
+                created_username,
+                created_name) == 3) {
+
+            printf("\n");
+            printf("----------------------------------------\n");
+            printf("          EMPLOYEE CREATED\n");
+            printf("----------------------------------------\n");
+
+            printf(
+                "User ID  : %lld\n",
+                user_id
+            );
+
+            printf(
+                "Username : %s\n",
+                created_username
+            );
+
+            printf(
+                "Name     : %s\n",
+                created_name
+            );
+
+            printf(
+                "Role     : EMPLOYEE\n"
+            );
+
+            printf(
+                "Status   : ACTIVE\n"
+            );
+
+            printf("----------------------------------------\n");
+        }
+
+        return 0;
+    }
+
+    printf(
+        "%s\n",
+        response
+    );
+
+    return 0;
+}
+
+static int admin_view_user(
+    int sock_fd)
+{
+    char id_text[64];
+
+    if (read_line(
+            "Enter user ID: ",
+            id_text,
+            sizeof(id_text)) == -1) {
+
+        return -1;
+    }
+
+    errno = 0;
+
+    char *end = NULL;
+
+    long long user_id =
+        strtoll(
+            id_text,
+            &end,
+            10
+        );
+
+    if (errno != 0 ||
+        end == id_text ||
+        *end != '\0' ||
+        user_id <= 0) {
+
+        printf(
+            "\nInvalid user ID.\n"
+        );
+
+        return 0;
+    }
+
+    char request[128];
+
+    snprintf(
+        request,
+        sizeof(request),
+        "VIEW_USER|%lld",
+        user_id
+    );
+
+    char response[
+        MAX_RESPONSE_SIZE
+    ];
+
+    if (send_and_receive(
+            sock_fd,
+            request,
+            response,
+            sizeof(response)) == -1) {
+
+        return -1;
+    }
+
+    if (strcmp(
+            response,
+            "VIEW_USER_FAILED|NOT_FOUND") == 0) {
+
+        printf(
+            "\nUser not found.\n"
+        );
+
+        return 0;
+    }
+
+    if (strncmp(
+            response,
+            "VIEW_USER_OK|",
+            13) == 0) {
+
+        long long returned_id;
+        int role;
+        int active;
+
+        char username[
+            MAX_USERNAME_LEN + 1
+        ];
+
+        char full_name[
+            MAX_NAME_LEN + 1
+        ];
+
+        if (sscanf(
+                response,
+                "VIEW_USER_OK|%lld|%32[^|]|%100[^|]|%d|%d",
+                &returned_id,
+                username,
+                full_name,
+                &role,
+                &active) == 5) {
+
+            printf("\n");
+            printf("----------------------------------------\n");
+            printf("              USER DETAILS\n");
+            printf("----------------------------------------\n");
+
+            printf(
+                "User ID  : %lld\n",
+                returned_id
+            );
+
+            printf(
+                "Username : %s\n",
+                username
+            );
+
+            printf(
+                "Name     : %s\n",
+                full_name
+            );
+
+            printf(
+                "Role     : %s\n",
+                client_role_name(
+                    (UserRole)role
+                )
+            );
+
+            printf(
+                "Status   : %s\n",
+                active
+                    ? "ACTIVE"
+                    : "INACTIVE"
+            );
+
+            printf("----------------------------------------\n");
+        }
+
+        return 0;
+    }
+
+    printf(
+        "%s\n",
+        response
+    );
+
+    return 0;
+}
+
+static int admin_modify_user(
+    int sock_fd)
+{
+    char id_text[64];
+
+    if (read_line(
+            "Enter customer/employee user ID: ",
+            id_text,
+            sizeof(id_text)) == -1) {
+
+        return -1;
+    }
+
+    errno = 0;
+
+    char *end = NULL;
+
+    long long user_id =
+        strtoll(
+            id_text,
+            &end,
+            10
+        );
+
+    if (errno != 0 ||
+        end == id_text ||
+        *end != '\0' ||
+        user_id <= 0) {
+
+        printf(
+            "\nInvalid user ID.\n"
+        );
+
+        return 0;
+    }
+
+    char new_name[
+        MAX_NAME_LEN + 1
+    ];
+
+    if (read_line(
+            "Enter new full name: ",
+            new_name,
+            sizeof(new_name)) == -1) {
+
+        return -1;
+    }
+
+    if (new_name[0] == '\0' ||
+        strchr(new_name, '|') != NULL) {
+
+        printf(
+            "\nInvalid name.\n"
+        );
+
+        return 0;
+    }
+
+    char request[
+        MAX_REQUEST_SIZE
+    ];
+
+    int written =
+        snprintf(
+            request,
+            sizeof(request),
+            "ADMIN_MODIFY_USER|%lld|%s",
+            user_id,
+            new_name
+        );
+
+    if (written < 0 ||
+        (size_t)written >= sizeof(request)) {
+
+        printf(
+            "\nRequest is too large.\n"
+        );
+
+        return 0;
+    }
+
+    char response[
+        MAX_RESPONSE_SIZE
+    ];
+
+    if (send_and_receive(
+            sock_fd,
+            request,
+            response,
+            sizeof(response)) == -1) {
+
+        return -1;
+    }
+
+    if (strcmp(
+            response,
+            "ADMIN_MODIFY_USER_FAILED|USER_NOT_FOUND") == 0) {
+
+        printf(
+            "\nUser not found.\n"
+        );
+
+        return 0;
+    }
+
+    if (strcmp(
+            response,
+            "ADMIN_MODIFY_USER_FAILED|INVALID_ROLE") == 0) {
+
+        printf(
+            "\nOnly customer or employee details "
+            "can be modified here.\n"
+        );
+
+        return 0;
+    }
+
+    if (strcmp(
+            response,
+            "ADMIN_MODIFY_USER_FAILED|INVALID_NAME") == 0) {
+
+        printf(
+            "\nInvalid name.\n"
+        );
+
+        return 0;
+    }
+
+    if (strncmp(
+            response,
+            "ADMIN_MODIFY_USER_OK|",
+            21) == 0) {
+
+        long long returned_id;
+
+        char returned_name[
+            MAX_NAME_LEN + 1
+        ];
+
+        if (sscanf(
+                response,
+                "ADMIN_MODIFY_USER_OK|%lld|%100[^\n]",
+                &returned_id,
+                returned_name) == 2) {
+
+            printf("\n");
+            printf("----------------------------------------\n");
+            printf("          USER DETAILS UPDATED\n");
+            printf("----------------------------------------\n");
+
+            printf(
+                "User ID  : %lld\n",
+                returned_id
+            );
+
+            printf(
+                "New Name : %s\n",
+                returned_name
+            );
+
+            printf("----------------------------------------\n");
+        }
+
+        return 0;
+    }
+
+    printf(
+        "%s\n",
+        response
+    );
+
+    return 0;
+}
+
+static int admin_manage_user_role(
+    int sock_fd)
+{
+    char id_text[64];
+
+    if (read_line(
+            "Enter user ID: ",
+            id_text,
+            sizeof(id_text)) == -1) {
+
+        return -1;
+    }
+
+    errno = 0;
+
+    char *end = NULL;
+
+    long long user_id =
+        strtoll(
+            id_text,
+            &end,
+            10
+        );
+
+    if (errno != 0 ||
+        end == id_text ||
+        *end != '\0' ||
+        user_id <= 0) {
+
+        printf(
+            "\nInvalid user ID.\n"
+        );
+
+        return 0;
+    }
+
+    printf("\n");
+    printf("1. CUSTOMER\n");
+    printf("2. EMPLOYEE\n");
+
+    char role_choice[16];
+
+    if (read_line(
+            "Select new role: ",
+            role_choice,
+            sizeof(role_choice)) == -1) {
+
+        return -1;
+    }
+
+    const char *role_name;
+
+    if (strcmp(
+            role_choice,
+            "1") == 0) {
+
+        role_name =
+            "CUSTOMER";
+
+    } else if (strcmp(
+                   role_choice,
+                   "2") == 0) {
+
+        role_name =
+            "EMPLOYEE";
+
+    } else {
+
+        printf(
+            "\nInvalid role choice.\n"
+        );
+
+        return 0;
+    }
+
+    char request[128];
+
+    snprintf(
+        request,
+        sizeof(request),
+        "CHANGE_ROLE|%lld|%s",
+        user_id,
+        role_name
+    );
+
+    char response[
+        MAX_RESPONSE_SIZE
+    ];
+
+    if (send_and_receive(
+            sock_fd,
+            request,
+            response,
+            sizeof(response)) == -1) {
+
+        return -1;
+    }
+
+    if (strcmp(
+            response,
+            "CHANGE_ROLE_FAILED|USER_NOT_FOUND") == 0) {
+
+        printf(
+            "\nUser not found.\n"
+        );
+
+        return 0;
+    }
+
+    if (strcmp(
+            response,
+            "CHANGE_ROLE_FAILED|PROTECTED_ROLE") == 0) {
+
+        printf(
+            "\nManager and Admin roles cannot "
+            "be changed here.\n"
+        );
+
+        return 0;
+    }
+
+    if (strcmp(
+            response,
+            "CHANGE_ROLE_FAILED|SELF") == 0) {
+
+        printf(
+            "\nYou cannot change your own role.\n"
+        );
+
+        return 0;
+    }
+
+    if (strcmp(
+            response,
+            "CHANGE_ROLE_FAILED|USER_LOGGED_IN") == 0) {
+
+        printf(
+            "\nThe user is currently logged in. "
+            "Ask them to logout before changing the role.\n"
+        );
+
+        return 0;
+    }
+
+    if (strcmp(
+            response,
+            "CHANGE_ROLE_FAILED|SAME_ROLE") == 0) {
+
+        printf(
+            "\nThe user already has that role.\n"
+        );
+
+        return 0;
+    }
+
+    if (strncmp(
+            response,
+            "CHANGE_ROLE_OK|",
+            15) == 0) {
+
+        long long returned_id;
+        char returned_role[32];
+
+        if (sscanf(
+                response,
+                "CHANGE_ROLE_OK|%lld|%31s",
+                &returned_id,
+                returned_role) == 2) {
+
+            printf("\n");
+            printf("----------------------------------------\n");
+            printf("            ROLE UPDATED\n");
+            printf("----------------------------------------\n");
+
+            printf(
+                "User ID  : %lld\n",
+                returned_id
+            );
+
+            printf(
+                "New Role : %s\n",
+                returned_role
+            );
+
+            printf("----------------------------------------\n");
+        }
+
+        return 0;
+    }
+
+    printf(
+        "%s\n",
+        response
+    );
+
+    return 0;
+}
+
+static int admin_change_password(
+    int sock_fd)
+{
+    char current_password[
+        MAX_PASSWORD_LEN + 1
+    ];
+
+    char new_password[
+        MAX_PASSWORD_LEN + 1
+    ];
+
+    char confirm_password[
+        MAX_PASSWORD_LEN + 1
+    ];
+
+    printf(
+        "Enter current "
+    );
+
+    if (read_password(
+            current_password,
+            sizeof(current_password)) == -1) {
+
+        return -1;
+    }
+
+    printf(
+        "Enter new "
+    );
+
+    if (read_password(
+            new_password,
+            sizeof(new_password)) == -1) {
+
+        memset(
+            current_password,
+            0,
+            sizeof(current_password)
+        );
+
+        return -1;
+    }
+
+    printf(
+        "Confirm new "
+    );
+
+    if (read_password(
+            confirm_password,
+            sizeof(confirm_password)) == -1) {
+
+        memset(
+            current_password,
+            0,
+            sizeof(current_password)
+        );
+
+        memset(
+            new_password,
+            0,
+            sizeof(new_password)
+        );
+
+        return -1;
+    }
+
+    if (strcmp(
+            new_password,
+            confirm_password) != 0) {
+
+        printf(
+            "\nNew passwords do not match.\n"
+        );
+
+        memset(
+            current_password,
+            0,
+            sizeof(current_password)
+        );
+
+        memset(
+            new_password,
+            0,
+            sizeof(new_password)
+        );
+
+        memset(
+            confirm_password,
+            0,
+            sizeof(confirm_password)
+        );
+
+        return 0;
+    }
+
+    if (strlen(
+            new_password) < 8) {
+
+        printf(
+            "\nNew password must contain "
+            "at least 8 characters.\n"
+        );
+
+        memset(
+            current_password,
+            0,
+            sizeof(current_password)
+        );
+
+        memset(
+            new_password,
+            0,
+            sizeof(new_password)
+        );
+
+        memset(
+            confirm_password,
+            0,
+            sizeof(confirm_password)
+        );
+
+        return 0;
+    }
+
+    char request[
+        MAX_REQUEST_SIZE
+    ];
+
+    int written =
+        snprintf(
+            request,
+            sizeof(request),
+            "ADMIN_CHANGE_PASSWORD|%s|%s",
+            current_password,
+            new_password
+        );
+
+    memset(
+        current_password,
+        0,
+        sizeof(current_password)
+    );
+
+    memset(
+        new_password,
+        0,
+        sizeof(new_password)
+    );
+
+    memset(
+        confirm_password,
+        0,
+        sizeof(confirm_password)
+    );
+
+    if (written < 0 ||
+        (size_t)written >=
+            sizeof(request)) {
+
+        printf(
+            "\nUnable to create password request.\n"
+        );
+
+        memset(
+            request,
+            0,
+            sizeof(request)
+        );
+
+        return 0;
+    }
+
+    char response[
+        MAX_RESPONSE_SIZE
+    ];
+
+    if (send_and_receive(
+            sock_fd,
+            request,
+            response,
+            sizeof(response)) == -1) {
+
+        memset(
+            request,
+            0,
+            sizeof(request)
+        );
+
+        return -1;
+    }
+
+    memset(
+        request,
+        0,
+        sizeof(request)
+    );
+
+    if (strcmp(
+            response,
+            "ADMIN_PASSWORD_OK") == 0) {
+
+        printf(
+            "\nPassword changed successfully.\n"
+        );
+
+        return 0;
+    }
+
+    if (strcmp(
+            response,
+            "ADMIN_PASSWORD_FAILED|INCORRECT_CURRENT_PASSWORD") == 0) {
+
+        printf(
+            "\nCurrent password is incorrect.\n"
+        );
+
+        return 0;
+    }
+
+    if (strcmp(
+            response,
+            "ADMIN_PASSWORD_FAILED|SAME_PASSWORD") == 0) {
+
+        printf(
+            "\nNew password cannot be the same "
+            "as the current password.\n"
+        );
+
+        return 0;
+    }
+
+    if (strcmp(
+            response,
+            "ADMIN_PASSWORD_FAILED|INVALID_PASSWORD") == 0) {
+
+        printf(
+            "\nInvalid new password.\n"
+        );
+
+        return 0;
+    }
+
+    printf(
+        "%s\n",
+        response
+    );
+
+    return 0;
+}
+
+
+
+/*=======ADMIN LOOP=======*/
+static int admin_loop(
+    int sock_fd,
+    ClientUser *user)
+{
+    char choice[32];
+
+    while (user->logged_in) {
+
+        display_admin_menu(
+            user
+        );
+
+        if (read_line(
+                "Enter choice: ",
+                choice,
+                sizeof(choice)) == -1) {
+
+            return -1;
+        }
+
+        if (strcmp(
+                choice,
+                "1") == 0) {
+
+            if (admin_add_employee(
+                    sock_fd) == -1) {
+
+                return -1;
+            }
+
+            continue;
+        }
+
+	if (strcmp(
+        choice,
+        "2") == 0) {
+
+   	 if (admin_view_user(
+            sock_fd) == -1) {
+
+       	 return -1;
+   	 }
+
+   	 continue;
+	}
+	
+	if (strcmp(
+        choice,
+        "3") == 0) {
+
+   	 if (admin_modify_user(
+            sock_fd) == -1) {
+
+        return -1;
+    	}
+
+    	continue;
+	}
+
+	if (strcmp(
+        choice,
+        "4") == 0) {
+
+   	 if (admin_manage_user_role(
+            sock_fd) == -1) {
+
+       	 return -1;
+   	 }
+
+   	 continue;
+	}
+
+	if (strcmp(
+        choice,
+        "5") == 0) {
+
+    	if (admin_change_password(
+            sock_fd) == -1) {
+
+        return -1;
+   	 }
+
+    	continue;
+	}
+
+
+        if (strcmp(
+                choice,
+                "6") == 0) {
+
+            char response[
+                MAX_RESPONSE_SIZE
+            ];
+
+            if (send_and_receive(
+                    sock_fd,
+                    "LOGOUT",
+                    response,
+                    sizeof(response)) == -1) {
+
+                return -1;
+            }
+
+            if (strcmp(
+                    response,
+                    "LOGOUT_OK") == 0) {
+
+                user->logged_in = 0;
+
+                printf(
+                    "\nLogged out successfully.\n"
+                );
+
+                return 0;
+            }
+
+            printf(
+                "%s\n",
+                response
+            );
+
+            continue;
+        }
+
+        if (strcmp(
+                choice,
+                "0") == 0) {
+
+            send_message(
+                sock_fd,
+                "EXIT"
+            );
+
+            return 1;
+        }
+
+        printf(
+            "\nInvalid choice.\n"
+        );
+    }
+
+    return 0;
+}
+
+
 
 int main(void)
 {
@@ -4501,6 +5691,23 @@ int main(void)
 
    	 continue;
 	}
+
+
+	if (user.role ==
+         ROLE_ADMIN) {
+
+   	int  result =
+        admin_loop(
+            sock_fd,
+            &user
+        );
+
+   	 if (result != 0)
+       		 running = 0;
+
+   	 continue;
+	}
+
 
         printf(
             "\nRole menu not implemented yet.\n"

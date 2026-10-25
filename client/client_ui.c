@@ -134,3 +134,38 @@ void display_manager_menu(
 
     printf("========================================\n");
 }
+
+void display_admin_menu(
+    const ClientUser *user)
+{
+    printf("\n");
+    printf("========================================\n");
+    printf("               ADMIN MENU\n");
+    printf("========================================\n");
+
+    printf(
+        "User ID : %lld\n",
+        (long long)user->user_id
+    );
+
+    printf(
+        "Name    : %s\n",
+        user->full_name
+    );
+
+    printf(
+        "Role    : ADMIN\n"
+    );
+
+    printf("----------------------------------------\n");
+
+    printf("1. Add New Bank Employee\n");
+    printf("2. View User Details\n");
+    printf("3. Modify Customer/Employee Details\n");
+    printf("4. Manage User Roles\n");
+    printf("5. Change Password\n");
+    printf("6. Logout\n");
+    printf("0. Exit\n");
+
+    printf("========================================\n");
+}

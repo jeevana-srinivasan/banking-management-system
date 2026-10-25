@@ -1833,6 +1833,982 @@ static int handle_manager_change_password(
     return 0;
 }
 
+//ADMIN FUNCTIONS
+static int parse_add_employee_request(
+    const char *request,
+    char *username,
+    size_t username_size,
+    char *password,
+    size_t password_size,
+    char *full_name,
+    size_t name_size)
+{
+    const char prefix[] =
+        "ADD_EMPLOYEE|";
+
+    if (strncmp(
+            request,
+            prefix,
+            strlen(prefix)) != 0) {
+
+        return -1;
+    }
+
+    char copy[
+        MAX_REQUEST_SIZE
+    ];
+
+    if (strlen(request) >=
+        sizeof(copy)) {
+
+        return -1;
+    }
+
+    strcpy(
+        copy,
+        request +
+            strlen(prefix)
+    );
+
+    char *saveptr = NULL;
+
+    char *username_field =
+        strtok_r(
+            copy,
+            "|",
+            &saveptr
+        );
+
+    char *password_field =
+        strtok_r(
+            NULL,
+            "|",
+            &saveptr
+        );
+
+    char *name_field =
+        strtok_r(
+            NULL,
+            "|",
+            &saveptr
+        );
+
+    if (username_field == NULL ||
+        password_field == NULL ||
+        name_field == NULL ||
+        strtok_r(
+            NULL,
+            "|",
+            &saveptr) != NULL) {
+
+        return -1;
+    }
+
+    if (strlen(username_field) == 0 ||
+        strlen(username_field) >=
+            username_size ||
+        strlen(password_field) < 8 ||
+        strlen(password_field) >=
+            password_size ||
+        strlen(name_field) == 0 ||
+        strlen(name_field) >=
+            name_size) {
+
+        return -1;
+    }
+
+    strcpy(
+        username,
+        username_field
+    );
+
+    strcpy(
+        password,
+        password_field
+    );
+
+    strcpy(
+        full_name,
+        name_field
+    );
+
+    return 0;
+}
+
+static int handle_add_employee(
+    int client_fd,
+    const Session *session,
+    const char *request)
+{
+    if (session->role !=
+        ROLE_ADMIN) {
+
+        send_message(
+            client_fd,
+            "ADD_EMPLOYEE_FAILED|PERMISSION_DENIED"
+        );
+
+        return 0;
+    }
+
+    char username[
+        MAX_USERNAME_LEN + 1
+    ];
+
+    char password[
+        MAX_PASSWORD_LEN + 1
+    ];
+
+    char full_name[
+        MAX_NAME_LEN + 1
+    ];
+
+    if (parse_add_employee_request(
+            request,
+            username,
+            sizeof(username),
+            password,
+            sizeof(password),
+            full_name,
+            sizeof(full_name)) == -1) {
+
+        send_message(
+            client_fd,
+            "ADD_EMPLOYEE_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    char password_hash[
+        MAX_PASSWORD_HASH_LEN
+    ];
+
+    OperationStatus status =
+        generate_password_hash(
+            password,
+            password_hash,
+            sizeof(password_hash)
+        );
+
+    memset(
+        password,
+        0,
+        sizeof(password)
+    );
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "ADD_EMPLOYEE_FAILED|PASSWORD_ERROR"
+        );
+
+        return 0;
+    }
+
+    UserRecord employee;
+
+    status =
+        create_user_record(
+            username,
+            password_hash,
+            ROLE_EMPLOYEE,
+            1,
+            full_name,
+            &employee
+        );
+
+    memset(
+        password_hash,
+        0,
+        sizeof(password_hash)
+    );
+
+    if (status ==
+        STATUS_DUPLICATE) {
+
+        send_message(
+            client_fd,
+            "ADD_EMPLOYEE_FAILED|USERNAME_EXISTS"
+        );
+
+        return 0;
+    }
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "ADD_EMPLOYEE_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    char response[512];
+
+    snprintf(
+        response,
+        sizeof(response),
+        "ADD_EMPLOYEE_OK|%lld|%s|%s",
+        (long long)
+            employee.user_id,
+        employee.username,
+        employee.full_name
+    );
+
+    send_message(
+        client_fd,
+        response
+    );
+
+    return 0;
+}
+
+static int handle_admin_view_user(
+    int client_fd,
+    const Session *session,
+    const char *request)
+{
+    if (session->role != ROLE_ADMIN) {
+
+        send_message(
+            client_fd,
+            "VIEW_USER_FAILED|PERMISSION_DENIED"
+        );
+
+        return 0;
+    }
+
+    const char prefix[] =
+        "VIEW_USER|";
+
+    if (strncmp(
+            request,
+            prefix,
+            strlen(prefix)) != 0) {
+
+        send_message(
+            client_fd,
+            "VIEW_USER_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    const char *value =
+        request + strlen(prefix);
+
+    if (value[0] == '\0' ||
+        strchr(value, '|') != NULL) {
+
+        send_message(
+            client_fd,
+            "VIEW_USER_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    errno = 0;
+
+    char *end = NULL;
+
+    long long parsed_id =
+        strtoll(
+            value,
+            &end,
+            10
+        );
+
+    if (errno != 0 ||
+        end == value ||
+        *end != '\0' ||
+        parsed_id <= 0) {
+
+        send_message(
+            client_fd,
+            "VIEW_USER_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    UserRecord user;
+
+    OperationStatus status =
+        find_user_by_id(
+            (UserId)parsed_id,
+            &user
+        );
+
+    if (status == STATUS_NOT_FOUND) {
+
+        send_message(
+            client_fd,
+            "VIEW_USER_FAILED|NOT_FOUND"
+        );
+
+        return 0;
+    }
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "VIEW_USER_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    char response[512];
+
+    snprintf(
+        response,
+        sizeof(response),
+        "VIEW_USER_OK|%lld|%s|%s|%d|%d",
+        (long long)user.user_id,
+        user.username,
+        user.full_name,
+        (int)user.role,
+        user.active
+    );
+
+    send_message(
+        client_fd,
+        response
+    );
+
+    return 0;
+}
+
+static int handle_admin_modify_user(
+    int client_fd,
+    const Session *session,
+    const char *request)
+{
+    if (session->role != ROLE_ADMIN) {
+
+        send_message(
+            client_fd,
+            "ADMIN_MODIFY_USER_FAILED|PERMISSION_DENIED"
+        );
+
+        return 0;
+    }
+
+    const char prefix[] =
+        "ADMIN_MODIFY_USER|";
+
+    if (strncmp(
+            request,
+            prefix,
+            strlen(prefix)) != 0) {
+
+        send_message(
+            client_fd,
+            "ADMIN_MODIFY_USER_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    char copy[MAX_REQUEST_SIZE];
+
+    if (strlen(request) >= sizeof(copy)) {
+
+        send_message(
+            client_fd,
+            "ADMIN_MODIFY_USER_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    strcpy(
+        copy,
+        request + strlen(prefix)
+    );
+
+    char *separator =
+        strchr(copy, '|');
+
+    if (separator == NULL) {
+
+        send_message(
+            client_fd,
+            "ADMIN_MODIFY_USER_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    *separator = '\0';
+
+    const char *name =
+        separator + 1;
+
+    if (name[0] == '\0' ||
+        strchr(name, '|') != NULL) {
+
+        send_message(
+            client_fd,
+            "ADMIN_MODIFY_USER_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    errno = 0;
+
+    char *end = NULL;
+
+    long long parsed_id =
+        strtoll(
+            copy,
+            &end,
+            10
+        );
+
+    if (errno != 0 ||
+        end == copy ||
+        *end != '\0' ||
+        parsed_id <= 0) {
+
+        send_message(
+            client_fd,
+            "ADMIN_MODIFY_USER_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    UserRecord user;
+
+    OperationStatus status =
+        find_user_by_id(
+            (UserId)parsed_id,
+            &user
+        );
+
+    if (status == STATUS_NOT_FOUND) {
+
+        send_message(
+            client_fd,
+            "ADMIN_MODIFY_USER_FAILED|USER_NOT_FOUND"
+        );
+
+        return 0;
+    }
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "ADMIN_MODIFY_USER_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    if (user.role != ROLE_CUSTOMER &&
+        user.role != ROLE_EMPLOYEE) {
+
+        send_message(
+            client_fd,
+            "ADMIN_MODIFY_USER_FAILED|INVALID_ROLE"
+        );
+
+        return 0;
+    }
+
+    status =
+        update_user_full_name(
+            user.user_id,
+            name
+        );
+
+    if (status == STATUS_INVALID_INPUT) {
+
+        send_message(
+            client_fd,
+            "ADMIN_MODIFY_USER_FAILED|INVALID_NAME"
+        );
+
+        return 0;
+    }
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "ADMIN_MODIFY_USER_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    char response[512];
+
+    snprintf(
+        response,
+        sizeof(response),
+        "ADMIN_MODIFY_USER_OK|%lld|%s",
+        (long long)user.user_id,
+        name
+    );
+
+    send_message(
+        client_fd,
+        response
+    );
+
+    return 0;
+}
+
+static int handle_admin_change_role(
+    int client_fd,
+    const Session *session,
+    const char *request)
+{
+    if (session->role !=
+        ROLE_ADMIN) {
+
+        send_message(
+            client_fd,
+            "CHANGE_ROLE_FAILED|PERMISSION_DENIED"
+        );
+
+        return 0;
+    }
+
+    const char prefix[] =
+        "CHANGE_ROLE|";
+
+    if (strncmp(
+            request,
+            prefix,
+            strlen(prefix)) != 0) {
+
+        send_message(
+            client_fd,
+            "CHANGE_ROLE_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    char copy[128];
+
+    if (strlen(request) >=
+        sizeof(copy)) {
+
+        send_message(
+            client_fd,
+            "CHANGE_ROLE_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    strcpy(
+        copy,
+        request +
+            strlen(prefix)
+    );
+
+    char *separator =
+        strchr(
+            copy,
+            '|'
+        );
+
+    if (separator == NULL) {
+
+        send_message(
+            client_fd,
+            "CHANGE_ROLE_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    *separator =
+        '\0';
+
+    if (strchr(
+            separator + 1,
+            '|') != NULL) {
+
+        send_message(
+            client_fd,
+            "CHANGE_ROLE_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    errno = 0;
+
+    char *end = NULL;
+
+    long long parsed_id =
+        strtoll(
+            copy,
+            &end,
+            10
+        );
+
+    if (errno != 0 ||
+        end == copy ||
+        *end != '\0' ||
+        parsed_id <= 0) {
+
+        send_message(
+            client_fd,
+            "CHANGE_ROLE_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    UserId user_id =
+        (UserId)parsed_id;
+
+    /*
+     * Admin cannot change their own role.
+     */
+    if (user_id ==
+        session->user_id) {
+
+        send_message(
+            client_fd,
+            "CHANGE_ROLE_FAILED|SELF"
+        );
+
+        return 0;
+    }
+
+    UserRole new_role;
+
+    if (strcmp(
+            separator + 1,
+            "CUSTOMER") == 0) {
+
+        new_role =
+            ROLE_CUSTOMER;
+
+    } else if (strcmp(
+                   separator + 1,
+                   "EMPLOYEE") == 0) {
+
+        new_role =
+            ROLE_EMPLOYEE;
+
+    } else {
+
+        send_message(
+            client_fd,
+            "CHANGE_ROLE_FAILED|INVALID_ROLE"
+        );
+
+        return 0;
+    }
+
+    UserRecord user;
+
+    OperationStatus status =
+        find_user_by_id(
+            user_id,
+            &user
+        );
+
+    if (status ==
+        STATUS_NOT_FOUND) {
+
+        send_message(
+            client_fd,
+            "CHANGE_ROLE_FAILED|USER_NOT_FOUND"
+        );
+
+        return 0;
+    }
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "CHANGE_ROLE_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    /*
+     * Only CUSTOMER and EMPLOYEE accounts
+     * may be changed.
+     */
+    if (user.role != ROLE_CUSTOMER &&
+        user.role != ROLE_EMPLOYEE) {
+
+        send_message(
+            client_fd,
+            "CHANGE_ROLE_FAILED|PROTECTED_ROLE"
+        );
+
+        return 0;
+    }
+
+    /*
+     * Avoid stale role stored inside an
+     * already-active session.
+     */
+    if (session_is_user_active(
+            user_id)) {
+
+        send_message(
+            client_fd,
+            "CHANGE_ROLE_FAILED|USER_LOGGED_IN"
+        );
+
+        return 0;
+    }
+
+    status =
+        update_user_role(
+            user_id,
+            new_role
+        );
+
+    if (status ==
+        STATUS_CONFLICT) {
+
+        send_message(
+            client_fd,
+            "CHANGE_ROLE_FAILED|SAME_ROLE"
+        );
+
+        return 0;
+    }
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "CHANGE_ROLE_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    char response[256];
+
+    snprintf(
+        response,
+        sizeof(response),
+        "CHANGE_ROLE_OK|%lld|%s",
+        (long long)user_id,
+        new_role == ROLE_CUSTOMER
+            ? "CUSTOMER"
+            : "EMPLOYEE"
+    );
+
+    send_message(
+        client_fd,
+        response
+    );
+
+    return 0;
+}
+
+
+static int parse_admin_change_password_request(
+    const char *request,
+    char *current_password,
+    size_t current_size,
+    char *new_password,
+    size_t new_size)
+{
+    const char prefix[] =
+        "ADMIN_CHANGE_PASSWORD|";
+
+    if (strncmp(
+            request,
+            prefix,
+            strlen(prefix)) != 0) {
+
+        return -1;
+    }
+
+    char copy[
+        MAX_REQUEST_SIZE
+    ];
+
+    if (strlen(request) >=
+        sizeof(copy)) {
+
+        return -1;
+    }
+
+    strcpy(
+        copy,
+        request +
+            strlen(prefix)
+    );
+
+    char *separator =
+        strchr(
+            copy,
+            '|'
+        );
+
+    if (separator == NULL)
+        return -1;
+
+    *separator =
+        '\0';
+
+    if (strchr(
+            separator + 1,
+            '|') != NULL) {
+
+        return -1;
+    }
+
+    if (copy[0] == '\0' ||
+        separator[1] == '\0' ||
+        strlen(copy) >=
+            current_size ||
+        strlen(separator + 1) >=
+            new_size) {
+
+        return -1;
+    }
+
+    strcpy(
+        current_password,
+        copy
+    );
+
+    strcpy(
+        new_password,
+        separator + 1
+    );
+
+    return 0;
+}
+
+
+static int handle_admin_change_password(
+    int client_fd,
+    const Session *session,
+    const char *request)
+{
+    if (session->role !=
+        ROLE_ADMIN) {
+
+        send_message(
+            client_fd,
+            "ADMIN_PASSWORD_FAILED|PERMISSION_DENIED"
+        );
+
+        return 0;
+    }
+
+    char current_password[
+        MAX_PASSWORD_LEN + 1
+    ];
+
+    char new_password[
+        MAX_PASSWORD_LEN + 1
+    ];
+
+    if (parse_admin_change_password_request(
+            request,
+            current_password,
+            sizeof(current_password),
+            new_password,
+            sizeof(new_password)) == -1) {
+
+        send_message(
+            client_fd,
+            "ADMIN_PASSWORD_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    OperationStatus status =
+        change_user_password(
+            session->user_id,
+            current_password,
+            new_password
+        );
+
+    memset(
+        current_password,
+        0,
+        sizeof(current_password)
+    );
+
+    memset(
+        new_password,
+        0,
+        sizeof(new_password)
+    );
+
+    if (status ==
+        STATUS_PERMISSION_DENIED) {
+
+        send_message(
+            client_fd,
+            "ADMIN_PASSWORD_FAILED|INCORRECT_CURRENT_PASSWORD"
+        );
+
+        return 0;
+    }
+
+    if (status ==
+        STATUS_CONFLICT) {
+
+        send_message(
+            client_fd,
+            "ADMIN_PASSWORD_FAILED|SAME_PASSWORD"
+        );
+
+        return 0;
+    }
+
+    if (status ==
+        STATUS_INVALID_INPUT) {
+
+        send_message(
+            client_fd,
+            "ADMIN_PASSWORD_FAILED|INVALID_PASSWORD"
+        );
+
+        return 0;
+    }
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "ADMIN_PASSWORD_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    send_message(
+        client_fd,
+        "ADMIN_PASSWORD_OK"
+    );
+
+    return 0;
+}
 
 //=======================================Process request============================================//
 static int process_request(
@@ -2007,6 +2983,71 @@ static int process_request(
 
         return 0;
     }
+
+
+/*ADMIN COMMANDS*/
+
+if (strncmp(
+        request,
+        "ADD_EMPLOYEE|",
+        13) == 0) {
+
+    return handle_add_employee(
+        client_fd,
+        &session,
+        request
+    );
+}
+
+if (strncmp(
+        request,
+        "VIEW_USER|",
+        10) == 0) {
+
+    return handle_admin_view_user(
+        client_fd,
+        &session,
+        request
+    );
+}
+
+if (strncmp(
+        request,
+        "ADMIN_MODIFY_USER|",
+        18) == 0) {
+
+    return handle_admin_modify_user(
+        client_fd,
+        &session,
+        request
+    );
+}
+
+if (strncmp(
+        request,
+        "CHANGE_ROLE|",
+        12) == 0) {
+
+    return handle_admin_change_role(
+        client_fd,
+        &session,
+        request
+    );
+}
+
+if (strncmp(
+        request,
+        "ADMIN_CHANGE_PASSWORD|",
+        22) == 0) {
+
+    return handle_admin_change_password(
+        client_fd,
+        &session,
+        request
+    );
+}
+
+
 
 /*MANAGER COMMANDS*/
 if (strncmp(

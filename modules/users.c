@@ -1558,3 +1558,356 @@ OperationStatus delete_user_by_id(
 
     return STATUS_OK;
 }
+
+OperationStatus update_user_role(
+    UserId user_id,
+    UserRole new_role)
+{
+    if (user_id <= 0 ||
+        (new_role != ROLE_CUSTOMER &&
+         new_role != ROLE_EMPLOYEE)) {
+
+        return STATUS_INVALID_INPUT;
+    }
+
+    pthread_mutex_lock(
+        &users_write_mutex
+    );
+
+    UserRecord user;
+
+    OperationStatus status =
+        find_user_by_id(
+            user_id,
+            &user
+        );
+
+    if (status != STATUS_OK) {
+
+        pthread_mutex_unlock(
+            &users_write_mutex
+        );
+
+        return status;
+    }
+
+    if (user.role != ROLE_CUSTOMER &&
+        user.role != ROLE_EMPLOYEE) {
+
+        pthread_mutex_unlock(
+            &users_write_mutex
+        );
+
+        return STATUS_PERMISSION_DENIED;
+    }
+
+    if (user.role == new_role) {
+
+        pthread_mutex_unlock(
+            &users_write_mutex
+        );
+
+        return STATUS_CONFLICT;
+    }
+
+    int source_fd =
+        open(
+            USERS_FILE,
+            O_RDWR
+        );
+
+    if (source_fd == -1) {
+
+        pthread_mutex_unlock(
+            &users_write_mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    if (lock_users_file(
+            source_fd) == -1) {
+
+        close(source_fd);
+
+        pthread_mutex_unlock(
+            &users_write_mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    FILE *source =
+        fdopen(
+            dup(source_fd),
+            "r"
+        );
+
+    if (source == NULL) {
+
+        unlock_users_file(
+            source_fd
+        );
+
+        close(source_fd);
+
+        pthread_mutex_unlock(
+            &users_write_mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    const char *temp_path =
+        STORAGE_DIR "/users_role.tmp";
+
+    FILE *temp =
+        fopen(
+            temp_path,
+            "w"
+        );
+
+    if (temp == NULL) {
+
+        fclose(source);
+
+        unlock_users_file(
+            source_fd
+        );
+
+        close(source_fd);
+
+        pthread_mutex_unlock(
+            &users_write_mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    char line[2048];
+
+    int found = 0;
+
+    while (fgets(
+               line,
+               sizeof(line),
+               source) != NULL) {
+
+        char copy[2048];
+
+        if (strlen(line) >=
+            sizeof(copy)) {
+
+            fclose(source);
+            fclose(temp);
+
+            unlink(temp_path);
+
+            unlock_users_file(
+                source_fd
+            );
+
+            close(source_fd);
+
+            pthread_mutex_unlock(
+                &users_write_mutex
+            );
+
+            return STATUS_STORAGE_ERROR;
+        }
+
+        strcpy(
+            copy,
+            line
+        );
+
+        char *separator =
+            strchr(
+                copy,
+                '|'
+            );
+
+        if (separator == NULL) {
+
+            fputs(
+                line,
+                temp
+            );
+
+            continue;
+        }
+
+        *separator =
+            '\0';
+
+        errno = 0;
+
+        char *end = NULL;
+
+        long long current_id =
+            strtoll(
+                copy,
+                &end,
+                10
+            );
+
+        if (errno == 0 &&
+            end != copy &&
+            *end == '\0' &&
+            (UserId)current_id ==
+                user_id) {
+
+            if (fprintf(
+                    temp,
+                    "%lld|%s|%s|%d|%d|%s\n",
+
+                    (long long)
+                        user.user_id,
+
+                    user.username,
+
+                    user.password_hash,
+
+                    (int)new_role,
+
+                    user.active,
+
+                    user.full_name
+                ) < 0) {
+
+                fclose(source);
+                fclose(temp);
+
+                unlink(temp_path);
+
+                unlock_users_file(
+                    source_fd
+                );
+
+                close(source_fd);
+
+                pthread_mutex_unlock(
+                    &users_write_mutex
+                );
+
+                return STATUS_STORAGE_ERROR;
+            }
+
+            found = 1;
+
+        } else {
+
+            if (fputs(
+                    line,
+                    temp) == EOF) {
+
+                fclose(source);
+                fclose(temp);
+
+                unlink(temp_path);
+
+                unlock_users_file(
+                    source_fd
+                );
+
+                close(source_fd);
+
+                pthread_mutex_unlock(
+                    &users_write_mutex
+                );
+
+                return STATUS_STORAGE_ERROR;
+            }
+        }
+    }
+
+    fclose(source);
+
+    if (!found) {
+
+        fclose(temp);
+
+        unlink(temp_path);
+
+        unlock_users_file(
+            source_fd
+        );
+
+        close(source_fd);
+
+        pthread_mutex_unlock(
+            &users_write_mutex
+        );
+
+        return STATUS_NOT_FOUND;
+    }
+
+    if (fflush(temp) == EOF ||
+        fsync(
+            fileno(temp)) == -1) {
+
+        fclose(temp);
+
+        unlink(temp_path);
+
+        unlock_users_file(
+            source_fd
+        );
+
+        close(source_fd);
+
+        pthread_mutex_unlock(
+            &users_write_mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    if (fclose(temp) == EOF) {
+
+        unlink(temp_path);
+
+        unlock_users_file(
+            source_fd
+        );
+
+        close(source_fd);
+
+        pthread_mutex_unlock(
+            &users_write_mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    if (rename(
+            temp_path,
+            USERS_FILE) == -1) {
+
+        unlink(temp_path);
+
+        unlock_users_file(
+            source_fd
+        );
+
+        close(source_fd);
+
+        pthread_mutex_unlock(
+            &users_write_mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    unlock_users_file(
+        source_fd
+    );
+
+    close(source_fd);
+
+    pthread_mutex_unlock(
+        &users_write_mutex
+    );
+
+    return STATUS_OK;
+}
