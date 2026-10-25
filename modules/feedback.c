@@ -408,3 +408,110 @@ OperationStatus submit_feedback(
 
     return STATUS_OK;
 }
+
+OperationStatus get_all_feedback(
+    char *output,
+    size_t output_size)
+{
+    if (output == NULL ||
+        output_size == 0) {
+
+        return STATUS_INVALID_INPUT;
+    }
+
+    FILE *file =
+        fopen(
+            FEEDBACK_FILE,
+            "r"
+        );
+
+    if (file == NULL)
+        return STATUS_STORAGE_ERROR;
+
+    output[0] = '\0';
+
+    char line[2048];
+
+    int found = 0;
+
+    while (fgets(
+               line,
+               sizeof(line),
+               file) != NULL) {
+
+        long long feedback_id;
+        long long user_id;
+
+        char message[
+            MAX_FEEDBACK_LEN + 1
+        ];
+
+        char created_at[32];
+
+        int fields =
+            sscanf(
+                line,
+                "%lld|%lld|%1000[^|]|%31[^\n]",
+                &feedback_id,
+                &user_id,
+                message,
+                created_at
+            );
+
+        if (fields != 4)
+            continue;
+
+        char entry[
+            MAX_FEEDBACK_LEN + 256
+        ];
+
+        int written =
+            snprintf(
+                entry,
+                sizeof(entry),
+
+                "Feedback ID : %lld\n"
+                "Customer ID : %lld\n"
+                "Message     : %s\n"
+                "Submitted   : %s\n"
+                "----------------------------------------\n",
+
+                feedback_id,
+                user_id,
+                message,
+                created_at
+            );
+
+        if (written < 0 ||
+            (size_t)written >=
+                sizeof(entry)) {
+
+            fclose(file);
+
+            return STATUS_INTERNAL_ERROR;
+        }
+
+        if (strlen(output) +
+                strlen(entry) + 1 >
+            output_size) {
+
+            fclose(file);
+
+            return STATUS_STORAGE_ERROR;
+        }
+
+        strcat(
+            output,
+            entry
+        );
+
+        found = 1;
+    }
+
+    fclose(file);
+
+    if (!found)
+        return STATUS_NOT_FOUND;
+
+    return STATUS_OK;
+}

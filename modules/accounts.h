@@ -66,4 +66,18 @@ OperationStatus close_customer_account(
     AccountRecord *closed_account
 );
 
+OperationStatus set_account_status(
+    AccountId account_id,
+    AccountStatus new_status,
+    AccountRecord *updated_account
+);
+
+OperationStatus disburse_loan_amount(
+    AccountId account_id,
+    Money amount,
+    UserId performed_by,
+    LoanId loan_id,
+    Money *new_balance
+);
+
 #endif

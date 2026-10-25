@@ -98,3 +98,39 @@ void display_employee_menu(
 
     printf("========================================\n");
 }
+
+void display_manager_menu(
+    const ClientUser *user)
+{
+    printf("\n");
+    printf("========================================\n");
+    printf("              MANAGER MENU\n");
+    printf("========================================\n");
+
+    printf(
+        "User ID : %lld\n",
+        (long long)user->user_id
+    );
+
+    printf(
+        "Name    : %s\n",
+        user->full_name
+    );
+
+    printf(
+        "Role    : MANAGER\n"
+    );
+
+    printf("----------------------------------------\n");
+
+    printf("1. Activate Customer Account\n");
+    printf("2. Deactivate Customer Account\n");
+    printf("3. View Pending Loan Applications\n");
+    printf("4. Assign Loan to Employee\n");
+    printf("5. Review Customer Feedback\n");
+    printf("6. Change Password\n");
+    printf("7. Logout\n");
+    printf("0. Exit\n");
+
+    printf("========================================\n");
+}

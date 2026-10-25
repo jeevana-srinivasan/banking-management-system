@@ -1855,3 +1855,610 @@ OperationStatus close_customer_account(
 
     return STATUS_OK;
 }
+
+OperationStatus set_account_status(
+    AccountId account_id,
+    AccountStatus new_status,
+    AccountRecord *updated_account)
+{
+    if (account_id <= 0 ||
+        updated_account == NULL ||
+        (new_status != ACCOUNT_ACTIVE &&
+         new_status != ACCOUNT_INACTIVE)) {
+
+        return STATUS_INVALID_INPUT;
+    }
+
+    pthread_mutex_t *mutex =
+        mutex_for_account(
+            account_id
+        );
+
+    pthread_mutex_lock(
+        mutex
+    );
+
+    int fd =
+        open(
+            ACCOUNTS_FILE,
+            O_RDWR
+        );
+
+    if (fd == -1) {
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    off_t offset;
+
+    AccountRecord account;
+
+    int result =
+        find_record_by_account_id(
+            fd,
+            account_id,
+            &offset,
+            &account
+        );
+
+    if (result == 1) {
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_NOT_FOUND;
+    }
+
+    if (result != 0) {
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    if (lock_account_record(
+            fd,
+            offset) == -1) {
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    /*
+     * Re-read after acquiring the lock.
+     */
+    char old_record[
+        ACCOUNT_RECORD_SIZE + 1
+    ];
+
+    if (pread(
+            fd,
+            old_record,
+            ACCOUNT_RECORD_SIZE,
+            offset) !=
+        ACCOUNT_RECORD_SIZE) {
+
+        unlock_account_record(
+            fd,
+            offset
+        );
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    old_record[
+        ACCOUNT_RECORD_SIZE
+    ] = '\0';
+
+    if (parse_account_line(
+            old_record,
+            &account) != 0) {
+
+        unlock_account_record(
+            fd,
+            offset
+        );
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    /*
+     * A CLOSED account is permanent.
+     * Manager cannot reactivate it.
+     */
+    if (account.status ==
+        ACCOUNT_CLOSED) {
+
+        unlock_account_record(
+            fd,
+            offset
+        );
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_CONFLICT;
+    }
+
+    /*
+     * Already in requested state.
+     */
+    if (account.status ==
+        new_status) {
+
+        *updated_account =
+            account;
+
+        unlock_account_record(
+            fd,
+            offset
+        );
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_OK;
+    }
+
+    account.status =
+        new_status;
+
+    char new_record[
+        ACCOUNT_RECORD_SIZE + 1
+    ];
+
+    if (format_account_record(
+            &account,
+            new_record,
+            sizeof(new_record)) == -1) {
+
+        unlock_account_record(
+            fd,
+            offset
+        );
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_INTERNAL_ERROR;
+    }
+
+    if (pwrite(
+            fd,
+            new_record,
+            ACCOUNT_RECORD_SIZE,
+            offset) !=
+            ACCOUNT_RECORD_SIZE) {
+
+        unlock_account_record(
+            fd,
+            offset
+        );
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    if (fsync(fd) == -1) {
+
+        /*
+         * Best-effort rollback.
+         */
+        pwrite(
+            fd,
+            old_record,
+            ACCOUNT_RECORD_SIZE,
+            offset
+        );
+
+        fsync(fd);
+
+        unlock_account_record(
+            fd,
+            offset
+        );
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    *updated_account =
+        account;
+
+    unlock_account_record(
+        fd,
+        offset
+    );
+
+    close(fd);
+
+    pthread_mutex_unlock(
+        mutex
+    );
+
+    return STATUS_OK;
+}
+
+
+OperationStatus disburse_loan_amount(
+    AccountId account_id,
+    Money amount,
+    UserId performed_by,
+    LoanId loan_id,
+    Money *new_balance)
+{
+    if (account_id <= 0 ||
+        amount <= 0 ||
+        performed_by <= 0 ||
+        loan_id <= 0 ||
+        new_balance == NULL) {
+
+        return STATUS_INVALID_INPUT;
+    }
+
+    pthread_mutex_t *mutex =
+        mutex_for_account(
+            account_id
+        );
+
+    pthread_mutex_lock(
+        mutex
+    );
+
+    int fd =
+        open(
+            ACCOUNTS_FILE,
+            O_RDWR
+        );
+
+    if (fd == -1) {
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    off_t offset;
+
+    AccountRecord account;
+
+    int result =
+        find_record_by_account_id(
+            fd,
+            account_id,
+            &offset,
+            &account
+        );
+
+    if (result == 1) {
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_NOT_FOUND;
+    }
+
+    if (result != 0) {
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    if (lock_account_record(
+            fd,
+            offset) == -1) {
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    /*
+     * Re-read after acquiring the lock.
+     */
+    char old_record[
+        ACCOUNT_RECORD_SIZE + 1
+    ];
+
+    if (pread(
+            fd,
+            old_record,
+            ACCOUNT_RECORD_SIZE,
+            offset) !=
+        ACCOUNT_RECORD_SIZE) {
+
+        unlock_account_record(
+            fd,
+            offset
+        );
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    old_record[
+        ACCOUNT_RECORD_SIZE
+    ] = '\0';
+
+    if (parse_account_line(
+            old_record,
+            &account) != 0) {
+
+        unlock_account_record(
+            fd,
+            offset
+        );
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    /*
+     * Loan should be credited only to an
+     * active customer account.
+     */
+    if (account.status !=
+        ACCOUNT_ACTIVE) {
+
+        unlock_account_record(
+            fd,
+            offset
+        );
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_INACTIVE;
+    }
+
+    /*
+     * Prevent overflow.
+     */
+    if (account.balance >
+        INT64_MAX - amount) {
+
+        unlock_account_record(
+            fd,
+            offset
+        );
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_INVALID_INPUT;
+    }
+
+    Money old_balance =
+        account.balance;
+
+    account.balance +=
+        amount;
+
+    char new_record[
+        ACCOUNT_RECORD_SIZE + 1
+    ];
+
+    if (format_account_record(
+            &account,
+            new_record,
+            sizeof(new_record)) == -1) {
+
+        unlock_account_record(
+            fd,
+            offset
+        );
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_INTERNAL_ERROR;
+    }
+
+    /*
+     * Save updated balance.
+     */
+    if (pwrite(
+            fd,
+            new_record,
+            ACCOUNT_RECORD_SIZE,
+            offset) !=
+        ACCOUNT_RECORD_SIZE) {
+
+        unlock_account_record(
+            fd,
+            offset
+        );
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    if (fsync(fd) == -1) {
+
+        /*
+         * Best-effort rollback.
+         */
+        pwrite(
+            fd,
+            old_record,
+            ACCOUNT_RECORD_SIZE,
+            offset
+        );
+
+        fsync(fd);
+
+        unlock_account_record(
+            fd,
+            offset
+        );
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    /*
+     * Create loan-disbursement transaction.
+     */
+    char details[
+    MAX_DETAILS_LEN + 1
+];
+
+snprintf(
+    details,
+    sizeof(details),
+    "Loan disbursement - Loan ID %lld",
+    (long long)loan_id
+);
+
+TransactionId transaction_id;
+
+OperationStatus status =
+    append_transaction(
+        account.account_id,
+        TXN_LOAN_DISBURSEMENT,
+        amount,
+        account.balance,
+        details,
+        performed_by,
+        (TransactionId)loan_id,
+        &transaction_id
+    );
+
+    if (status != STATUS_OK) {
+
+        /*
+         * Transaction log failed.
+         * Restore the old balance.
+         */
+        account.balance =
+            old_balance;
+
+        pwrite(
+            fd,
+            old_record,
+            ACCOUNT_RECORD_SIZE,
+            offset
+        );
+
+        fsync(fd);
+
+        unlock_account_record(
+            fd,
+            offset
+        );
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            mutex
+        );
+
+        return status;
+    }
+
+    *new_balance =
+        account.balance;
+
+    unlock_account_record(
+        fd,
+        offset
+    );
+
+    close(fd);
+
+    pthread_mutex_unlock(
+        mutex
+    );
+
+    return STATUS_OK;
+}

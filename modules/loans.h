@@ -27,18 +27,8 @@ typedef struct {
 
     UserId assigned_employee_id;
 
-    /*
-     * 0  = no recommendation yet
-     * 1  = recommend approval
-     * 2  = recommend rejection
-     */
-    int employee_recommendation;
-
+    int employee_recommendation; //1 => approve 2=> reject
     char employee_notes[MAX_REASON_LEN + 1];
-
-    UserId decision_by;
-
-    char decision_reason[MAX_REASON_LEN + 1];
 
     char created_at[32];
     char updated_at[32];
@@ -76,6 +66,17 @@ OperationStatus decide_assigned_loan(
     LoanId loan_id,
     UserId employee_id,
     int approve,
+    LoanRecord *updated_loan
+);
+
+OperationStatus get_pending_loans(
+    char *output,
+    size_t output_size
+);
+
+OperationStatus assign_loan_to_employee(
+    LoanId loan_id,
+    UserId employee_id,
     LoanRecord *updated_loan
 );
 

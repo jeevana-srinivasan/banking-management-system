@@ -19,4 +19,6 @@ const char *client_role_name(UserRole role);
 
 void display_employee_menu(const ClientUser *user);
 
+void display_manager_menu( const ClientUser *user);
+
 #endif

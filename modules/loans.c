@@ -346,13 +346,7 @@ OperationStatus apply_for_loan(
         "-"
     );
 
-    loan.decision_by =
-        0;
-
-    strcpy(
-        loan.decision_reason,
-        "-"
-    );
+    
 
     if (current_timestamp(
             loan.created_at,
@@ -383,7 +377,7 @@ OperationStatus apply_for_loan(
             record,
             sizeof(record),
 
-            "%lld|%lld|%lld|%lld|%d|%d|%d|%lld|%d|%s|%lld|%s|%s|%s\n",
+            "%lld|%lld|%lld|%lld|%d|%d|%d|%lld|%d|%s|%s|%s\n",
 
             (long long)
                 loan.loan_id,
@@ -410,11 +404,6 @@ OperationStatus apply_for_loan(
             loan.employee_recommendation,
 
             loan.employee_notes,
-
-            (long long)
-                loan.decision_by,
-
-            loan.decision_reason,
 
             loan.created_at,
 
@@ -539,6 +528,7 @@ const char *loan_status_name(
     }
 }
 
+
 static int parse_loan_line(
     const char *line,
     LoanRecord *loan)
@@ -554,7 +544,6 @@ static int parse_loan_line(
     long long account_id;
     long long amount;
     long long assigned_employee_id;
-    long long decision_by;
 
     int tenure_months;
     int interest_basis_points;
@@ -562,10 +551,6 @@ static int parse_loan_line(
     int employee_recommendation;
 
     char employee_notes[
-        MAX_REASON_LEN + 1
-    ];
-
-    char decision_reason[
         MAX_REASON_LEN + 1
     ];
 
@@ -577,8 +562,7 @@ static int parse_loan_line(
             line,
             "%lld|%lld|%lld|%lld|"
             "%d|%d|%d|%lld|%d|"
-            "%500[^|]|%lld|%500[^|]|"
-            "%31[^|]|%31[^\n]",
+            "%500[^|]|%31[^|]|%31[^\n]",
 
             &loan_id,
             &user_id,
@@ -593,15 +577,11 @@ static int parse_loan_line(
             &employee_recommendation,
 
             employee_notes,
-
-            &decision_by,
-            decision_reason,
-
             created_at,
             updated_at
         );
 
-    if (fields != 14)
+    if (fields != 12)
         return -1;
 
     memset(
@@ -642,14 +622,6 @@ static int parse_loan_line(
         employee_notes
     );
 
-    loan->decision_by =
-        (UserId)decision_by;
-
-    strcpy(
-        loan->decision_reason,
-        decision_reason
-    );
-
     strcpy(
         loan->created_at,
         created_at
@@ -662,6 +634,8 @@ static int parse_loan_line(
 
     return 0;
 }
+
+
 
 OperationStatus get_customer_loans(
     UserId user_id,
@@ -708,7 +682,7 @@ OperationStatus get_customer_loans(
             strcspn(copy, "\r\n")
         ] = '\0';
 
-        char *fields[14];
+        char *fields[12];
 
         size_t count = 0;
 
@@ -722,7 +696,7 @@ OperationStatus get_customer_loans(
             );
 
         while (token != NULL &&
-               count < 14) {
+               count < 12) {
 
             fields[count++] =
                 token;
@@ -735,7 +709,7 @@ OperationStatus get_customer_loans(
                 );
         }
 
-        if (count != 14)
+        if (count != 12)
             continue;
 
         char *end = NULL;
@@ -808,12 +782,6 @@ OperationStatus get_customer_loans(
                 10
             );
 
-        long long decision_by =
-            strtoll(
-                fields[10],
-                NULL,
-                10
-            );
 
         char formatted[2048];
 
@@ -828,8 +796,6 @@ OperationStatus get_customer_loans(
                 "Interest Rate : %d.%02d%% p.a.\n"
                 "Status        : %s\n"
                 "Assigned To   : %s\n"
-                "Decision By   : %s\n"
-                "Decision      : %s\n"
                 "Applied On    : %s\n"
                 "Last Updated  : %s\n"
                 "----------------------------------------\n",
@@ -853,16 +819,8 @@ OperationStatus get_customer_loans(
                     ? "Not assigned"
                     : fields[7],
 
-                decision_by == 0
-                    ? "Not decided"
-                    : fields[10],
-
-                strcmp(fields[11], "-") == 0
-                    ? "Not decided"
-                    : fields[11],
-
-                fields[12],
-                fields[13]
+                fields[10],
+                fields[11]
             );
 
         if (written < 0)
@@ -1015,6 +973,426 @@ OperationStatus get_assigned_loans(
 
     return STATUS_OK;
 }
+
+OperationStatus get_pending_loans(
+    char *output,
+    size_t output_size)
+{
+    if (output == NULL ||
+        output_size == 0) {
+
+        return STATUS_INVALID_INPUT;
+    }
+
+    FILE *file =
+        fopen(
+            LOANS_FILE,
+            "r"
+        );
+
+    if (file == NULL)
+        return STATUS_STORAGE_ERROR;
+
+    output[0] = '\0';
+
+    char line[2048];
+
+    int found = 0;
+
+    while (fgets(
+               line,
+               sizeof(line),
+               file) != NULL) {
+
+        LoanRecord loan;
+
+        if (parse_loan_line(
+                line,
+                &loan) != 0) {
+
+            continue;
+        }
+
+        if (loan.status !=
+            LOAN_PENDING) {
+
+            continue;
+        }
+
+        char entry[512];
+
+        int written =
+            snprintf(
+                entry,
+                sizeof(entry),
+
+                "Loan ID: %lld | "
+                "Customer ID: %lld | "
+                "Account ID: %lld | "
+                "Amount: %s%lld.%02lld | "
+                "Tenure: %d months | "
+                "Interest: %.2f%% | "
+                "Status: PENDING\n",
+
+                (long long)
+                    loan.loan_id,
+
+                (long long)
+                    loan.user_id,
+
+                (long long)
+                    loan.account_id,
+
+                CURRENCY_SYMBOL,
+
+                (long long)
+                    (loan.amount / 100),
+
+                (long long)
+                    (loan.amount % 100),
+
+                loan.tenure_months,
+
+                loan.interest_basis_points /
+                    100.0
+            );
+
+        if (written < 0 ||
+            (size_t)written >=
+                sizeof(entry)) {
+
+            fclose(file);
+
+            return STATUS_INTERNAL_ERROR;
+        }
+
+        if (strlen(output) +
+                strlen(entry) + 1 >
+            output_size) {
+
+            fclose(file);
+
+            return STATUS_STORAGE_ERROR;
+        }
+
+        strcat(
+            output,
+            entry
+        );
+
+        found = 1;
+    }
+
+    fclose(file);
+
+    if (!found)
+        return STATUS_NOT_FOUND;
+
+    return STATUS_OK;
+}
+
+OperationStatus assign_loan_to_employee(
+    LoanId loan_id,
+    UserId employee_id,
+    LoanRecord *updated_loan)
+{
+    if (loan_id <= 0 ||
+        employee_id <= 0 ||
+        updated_loan == NULL) {
+
+        return STATUS_INVALID_INPUT;
+    }
+
+    pthread_mutex_lock(
+        &loan_mutex
+    );
+
+    int fd =
+        open(
+            LOANS_FILE,
+            O_RDWR
+        );
+
+    if (fd == -1) {
+
+        pthread_mutex_unlock(
+            &loan_mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    struct flock lock;
+
+    memset(
+        &lock,
+        0,
+        sizeof(lock)
+    );
+
+    lock.l_type = F_WRLCK;
+    lock.l_whence = SEEK_SET;
+    lock.l_start = 0;
+    lock.l_len = 0;
+
+    while (fcntl(
+               fd,
+               F_SETLKW,
+               &lock) == -1) {
+
+        if (errno == EINTR)
+            continue;
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            &loan_mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    FILE *source =
+        fdopen(
+            dup(fd),
+            "r"
+        );
+
+    if (source == NULL) {
+
+        lock.l_type = F_UNLCK;
+        fcntl(fd, F_SETLK, &lock);
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            &loan_mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    const char *temp_path =
+        STORAGE_DIR "/loans_assign.tmp";
+
+    FILE *temp =
+        fopen(
+            temp_path,
+            "w"
+        );
+
+    if (temp == NULL) {
+
+        fclose(source);
+
+        lock.l_type = F_UNLCK;
+        fcntl(fd, F_SETLK, &lock);
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            &loan_mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    char line[2048];
+
+    int found = 0;
+
+    while (fgets(
+               line,
+               sizeof(line),
+               source) != NULL) {
+
+        LoanRecord loan;
+
+        if (parse_loan_line(
+                line,
+                &loan) != 0) {
+
+            fputs(
+                line,
+                temp
+            );
+
+            continue;
+        }
+
+        if (loan.loan_id !=
+            loan_id) {
+
+            fputs(
+                line,
+                temp
+            );
+
+            continue;
+        }
+
+        found = 1;
+
+        /*
+         * Only pending loans can be assigned.
+         */
+        if (loan.status !=
+            LOAN_PENDING) {
+
+            fclose(source);
+            fclose(temp);
+
+            unlink(temp_path);
+
+            lock.l_type = F_UNLCK;
+            fcntl(fd, F_SETLK, &lock);
+
+            close(fd);
+
+            pthread_mutex_unlock(
+                &loan_mutex
+            );
+
+            return STATUS_CONFLICT;
+        }
+
+        loan.status =
+            LOAN_ASSIGNED;
+
+        loan.assigned_employee_id =
+            employee_id;
+
+        current_timestamp(
+            loan.updated_at,
+            sizeof(loan.updated_at)
+        );
+
+        if (fprintf(
+                temp,
+
+                "%lld|%lld|%lld|%lld|%d|%d|%d|%lld|%d|%s|%s|%s\n",
+
+                (long long)
+                    loan.loan_id,
+
+                (long long)
+                    loan.user_id,
+
+                (long long)
+                    loan.account_id,
+
+                (long long)
+                    loan.amount,
+
+                loan.tenure_months,
+
+                loan.interest_basis_points,
+
+                loan.status,
+
+                (long long)
+                    loan.assigned_employee_id,
+
+                loan.employee_recommendation,
+
+                loan.employee_notes,
+
+                loan.created_at,
+
+                loan.updated_at
+            ) < 0) {
+
+            fclose(source);
+            fclose(temp);
+
+            unlink(temp_path);
+
+            lock.l_type = F_UNLCK;
+            fcntl(fd, F_SETLK, &lock);
+
+            close(fd);
+
+            pthread_mutex_unlock(
+                &loan_mutex
+            );
+
+            return STATUS_STORAGE_ERROR;
+        }
+
+        *updated_loan =
+            loan;
+    }
+
+    fclose(source);
+
+    if (!found) {
+
+        fclose(temp);
+        unlink(temp_path);
+
+        lock.l_type = F_UNLCK;
+        fcntl(fd, F_SETLK, &lock);
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            &loan_mutex
+        );
+
+        return STATUS_NOT_FOUND;
+    }
+
+    if (fflush(temp) == EOF ||
+        fsync(fileno(temp)) == -1) {
+
+        fclose(temp);
+        unlink(temp_path);
+
+        lock.l_type = F_UNLCK;
+        fcntl(fd, F_SETLK, &lock);
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            &loan_mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    fclose(temp);
+
+    if (rename(
+            temp_path,
+            LOANS_FILE) == -1) {
+
+        unlink(temp_path);
+
+        lock.l_type = F_UNLCK;
+        fcntl(fd, F_SETLK, &lock);
+
+        close(fd);
+
+        pthread_mutex_unlock(
+            &loan_mutex
+        );
+
+        return STATUS_STORAGE_ERROR;
+    }
+
+    lock.l_type = F_UNLCK;
+    fcntl(fd, F_SETLK, &lock);
+
+    close(fd);
+
+    pthread_mutex_unlock(
+        &loan_mutex
+    );
+
+    return STATUS_OK;
+}
+
+
 
 OperationStatus decide_assigned_loan(
     LoanId loan_id,
@@ -1228,16 +1606,9 @@ OperationStatus decide_assigned_loan(
                 2;
         }
 
-        loan.decision_by =
-            employee_id;
 
         strcpy(
             loan.employee_notes,
-            "-"
-        );
-
-        strcpy(
-            loan.decision_reason,
             "-"
         );
 
@@ -1253,7 +1624,7 @@ OperationStatus decide_assigned_loan(
         if (fprintf(
                 temp,
 
-                "%lld|%lld|%lld|%lld|%d|%d|%d|%lld|%d|%s|%lld|%s|%s|%s\n",
+                "%lld|%lld|%lld|%lld|%d|%d|%d|%lld|%d|%s|%s|%s\n",
 
                 (long long)
                     loan.loan_id,
@@ -1279,11 +1650,6 @@ OperationStatus decide_assigned_loan(
                 loan.employee_recommendation,
 
                 loan.employee_notes,
-
-                (long long)
-                    loan.decision_by,
-
-                loan.decision_reason,
 
                 loan.created_at,
 

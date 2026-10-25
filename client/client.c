@@ -16,6 +16,8 @@
 #define BUFFER_SIZE \
     (PROTOCOL_MAX_MESSAGE + 1U)
 
+
+
 static int read_line(
     const char *prompt,
     char *buffer,
@@ -3459,6 +3461,861 @@ if (strcmp(
     return 0;
 }
 
+static int manager_change_account_status(
+    int sock_fd,
+    int activate)
+{
+    char account_text[64];
+
+    if (read_line(
+            "Enter customer account ID: ",
+            account_text,
+            sizeof(account_text)) == -1) {
+
+        return -1;
+    }
+
+    errno = 0;
+
+    char *end = NULL;
+
+    long long account_id =
+        strtoll(
+            account_text,
+            &end,
+            10
+        );
+
+    if (errno != 0 ||
+        end == account_text ||
+        *end != '\0' ||
+        account_id <= 0) {
+
+        printf(
+            "\nInvalid account ID.\n"
+        );
+
+        return 0;
+    }
+
+    char request[128];
+
+    snprintf(
+        request,
+        sizeof(request),
+        "%s%lld",
+        activate
+            ? "ACTIVATE_ACCOUNT|"
+            : "DEACTIVATE_ACCOUNT|",
+        account_id
+    );
+
+    char response[
+        MAX_RESPONSE_SIZE
+    ];
+
+    if (send_and_receive(
+            sock_fd,
+            request,
+            response,
+            sizeof(response)) == -1) {
+
+        return -1;
+    }
+
+    if (strcmp(
+            response,
+            "MANAGER_ACCOUNT_FAILED|NOT_FOUND") == 0) {
+
+        printf(
+            "\nCustomer account not found.\n"
+        );
+
+        return 0;
+    }
+
+    if (strcmp(
+            response,
+            "MANAGER_ACCOUNT_FAILED|ACCOUNT_CLOSED") == 0) {
+
+        printf(
+            "\nThis account is permanently closed "
+            "and cannot be activated or deactivated.\n"
+        );
+
+        return 0;
+    }
+
+    if (strncmp(
+            response,
+            "MANAGER_ACCOUNT_OK|",
+            19) == 0) {
+
+        long long returned_account_id;
+        long long user_id;
+        char status[32];
+
+        if (sscanf(
+                response,
+                "MANAGER_ACCOUNT_OK|%lld|%lld|%31s",
+                &returned_account_id,
+                &user_id,
+                status) == 3) {
+
+            printf("\n");
+            printf("----------------------------------------\n");
+            printf("          ACCOUNT UPDATED\n");
+            printf("----------------------------------------\n");
+
+            printf(
+                "Account ID : %lld\n",
+                returned_account_id
+            );
+
+            printf(
+                "Customer ID: %lld\n",
+                user_id
+            );
+
+            printf(
+                "Status     : %s\n",
+                status
+            );
+
+            printf("----------------------------------------\n");
+        }
+
+        return 0;
+    }
+
+    printf(
+        "%s\n",
+        response
+    );
+
+    return 0;
+}
+
+static int manager_view_pending_loans(
+    int sock_fd)
+{
+    char response[
+        MAX_RESPONSE_SIZE
+    ];
+
+    if (send_and_receive(
+            sock_fd,
+            "VIEW_PENDING_LOANS",
+            response,
+            sizeof(response)) == -1) {
+
+        return -1;
+    }
+
+    if (strcmp(
+            response,
+            "PENDING_LOANS_EMPTY") == 0) {
+
+        printf(
+            "\nNo pending loan applications.\n"
+        );
+
+        return 0;
+    }
+
+    if (strncmp(
+            response,
+            "PENDING_LOANS_OK|",
+            17) == 0) {
+
+        printf("\n");
+        printf("========================================\n");
+        printf("       PENDING LOAN APPLICATIONS\n");
+        printf("========================================\n");
+
+        printf(
+            "%s",
+            response + 17
+        );
+
+        printf(
+            "========================================\n"
+        );
+
+        return 0;
+    }
+
+    printf(
+        "%s\n",
+        response
+    );
+
+    return 0;
+}
+
+static int manager_assign_loan(
+    int sock_fd)
+{
+    char loan_text[64];
+    char employee_text[64];
+
+    if (read_line(
+            "Enter loan ID: ",
+            loan_text,
+            sizeof(loan_text)) == -1) {
+
+        return -1;
+    }
+
+    errno = 0;
+
+    char *end = NULL;
+
+    long long loan_id =
+        strtoll(
+            loan_text,
+            &end,
+            10
+        );
+
+    if (errno != 0 ||
+        end == loan_text ||
+        *end != '\0' ||
+        loan_id <= 0) {
+
+        printf(
+            "\nInvalid loan ID.\n"
+        );
+
+        return 0;
+    }
+
+    if (read_line(
+            "Enter employee user ID: ",
+            employee_text,
+            sizeof(employee_text)) == -1) {
+
+        return -1;
+    }
+
+    errno = 0;
+    end = NULL;
+
+    long long employee_id =
+        strtoll(
+            employee_text,
+            &end,
+            10
+        );
+
+    if (errno != 0 ||
+        end == employee_text ||
+        *end != '\0' ||
+        employee_id <= 0) {
+
+        printf(
+            "\nInvalid employee user ID.\n"
+        );
+
+        return 0;
+    }
+
+    char request[128];
+
+    snprintf(
+        request,
+        sizeof(request),
+        "ASSIGN_LOAN|%lld|%lld",
+        loan_id,
+        employee_id
+    );
+
+    char response[
+        MAX_RESPONSE_SIZE
+    ];
+
+    if (send_and_receive(
+            sock_fd,
+            request,
+            response,
+            sizeof(response)) == -1) {
+
+        return -1;
+    }
+
+    if (strcmp(
+            response,
+            "ASSIGN_LOAN_FAILED|LOAN_NOT_FOUND") == 0) {
+
+        printf(
+            "\nLoan application not found.\n"
+        );
+
+        return 0;
+    }
+
+    if (strcmp(
+            response,
+            "ASSIGN_LOAN_FAILED|EMPLOYEE_NOT_FOUND") == 0) {
+
+        printf(
+            "\nEmployee not found.\n"
+        );
+
+        return 0;
+    }
+
+    if (strcmp(
+            response,
+            "ASSIGN_LOAN_FAILED|NOT_EMPLOYEE") == 0) {
+
+        printf(
+            "\nThe specified user is not an employee.\n"
+        );
+
+        return 0;
+    }
+
+    if (strcmp(
+            response,
+            "ASSIGN_LOAN_FAILED|EMPLOYEE_INACTIVE") == 0) {
+
+        printf(
+            "\nThe employee account is inactive.\n"
+        );
+
+        return 0;
+    }
+
+    if (strcmp(
+            response,
+            "ASSIGN_LOAN_FAILED|NOT_PENDING") == 0) {
+
+        printf(
+            "\nThis loan is no longer pending "
+            "or has already been assigned.\n"
+        );
+
+        return 0;
+    }
+
+    if (strncmp(
+            response,
+            "ASSIGN_LOAN_OK|",
+            15) == 0) {
+
+        long long assigned_loan_id;
+        long long assigned_employee_id;
+
+        if (sscanf(
+                response,
+                "ASSIGN_LOAN_OK|%lld|%lld",
+                &assigned_loan_id,
+                &assigned_employee_id) == 2) {
+
+            printf("\n");
+            printf("----------------------------------------\n");
+            printf("            LOAN ASSIGNED\n");
+            printf("----------------------------------------\n");
+
+            printf(
+                "Loan ID     : %lld\n",
+                assigned_loan_id
+            );
+
+            printf(
+                "Employee ID : %lld\n",
+                assigned_employee_id
+            );
+
+            printf(
+                "Status      : ASSIGNED\n"
+            );
+
+            printf("----------------------------------------\n");
+        }
+
+        return 0;
+    }
+
+    printf(
+        "%s\n",
+        response
+    );
+
+    return 0;
+}
+
+static int manager_review_feedback(
+    int sock_fd)
+{
+    char response[
+        MAX_RESPONSE_SIZE
+    ];
+
+    if (send_and_receive(
+            sock_fd,
+            "REVIEW_FEEDBACK",
+            response,
+            sizeof(response)) == -1) {
+
+        return -1;
+    }
+
+    if (strcmp(
+            response,
+            "FEEDBACK_REVIEW_EMPTY") == 0) {
+
+        printf(
+            "\nNo customer feedback available.\n"
+        );
+
+        return 0;
+    }
+
+    if (strncmp(
+            response,
+            "FEEDBACK_REVIEW_OK|",
+            19) == 0) {
+
+        printf("\n");
+        printf("========================================\n");
+        printf("          CUSTOMER FEEDBACK\n");
+        printf("========================================\n");
+
+        printf(
+            "%s",
+            response + 19
+        );
+
+        printf(
+            "========================================\n"
+        );
+
+        return 0;
+    }
+
+    printf(
+        "%s\n",
+        response
+    );
+
+    return 0;
+}
+
+static int manager_change_password(
+    int sock_fd)
+{
+    char current_password[
+        MAX_PASSWORD_LEN + 1
+    ];
+
+    char new_password[
+        MAX_PASSWORD_LEN + 1
+    ];
+
+    char confirm_password[
+        MAX_PASSWORD_LEN + 1
+    ];
+
+    printf(
+        "Enter current "
+    );
+
+    if (read_password(
+            current_password,
+            sizeof(current_password)) == -1) {
+
+        return -1;
+    }
+
+    printf(
+        "Enter new "
+    );
+
+    if (read_password(
+            new_password,
+            sizeof(new_password)) == -1) {
+
+        memset(
+            current_password,
+            0,
+            sizeof(current_password)
+        );
+
+        return -1;
+    }
+
+    printf(
+        "Confirm new "
+    );
+
+    if (read_password(
+            confirm_password,
+            sizeof(confirm_password)) == -1) {
+
+        memset(
+            current_password,
+            0,
+            sizeof(current_password)
+        );
+
+        memset(
+            new_password,
+            0,
+            sizeof(new_password)
+        );
+
+        return -1;
+    }
+
+    if (strcmp(
+            new_password,
+            confirm_password) != 0) {
+
+        printf(
+            "\nNew passwords do not match.\n"
+        );
+
+        memset(
+            current_password,
+            0,
+            sizeof(current_password)
+        );
+
+        memset(
+            new_password,
+            0,
+            sizeof(new_password)
+        );
+
+        memset(
+            confirm_password,
+            0,
+            sizeof(confirm_password)
+        );
+
+        return 0;
+    }
+
+    if (strlen(
+            new_password) < 8) {
+
+        printf(
+            "\nNew password must contain "
+            "at least 8 characters.\n"
+        );
+
+        memset(
+            current_password,
+            0,
+            sizeof(current_password)
+        );
+
+        memset(
+            new_password,
+            0,
+            sizeof(new_password)
+        );
+
+        memset(
+            confirm_password,
+            0,
+            sizeof(confirm_password)
+        );
+
+        return 0;
+    }
+
+    char request[
+        MAX_REQUEST_SIZE
+    ];
+
+    int written =
+        snprintf(
+            request,
+            sizeof(request),
+
+            "MANAGER_CHANGE_PASSWORD|%s|%s",
+
+            current_password,
+            new_password
+        );
+
+    memset(
+        current_password,
+        0,
+        sizeof(current_password)
+    );
+
+    memset(
+        new_password,
+        0,
+        sizeof(new_password)
+    );
+
+    memset(
+        confirm_password,
+        0,
+        sizeof(confirm_password)
+    );
+
+    if (written < 0 ||
+        (size_t)written >=
+            sizeof(request)) {
+
+        printf(
+            "\nUnable to create password request.\n"
+        );
+
+        memset(
+            request,
+            0,
+            sizeof(request)
+        );
+
+        return 0;
+    }
+
+    char response[
+        MAX_RESPONSE_SIZE
+    ];
+
+    if (send_and_receive(
+            sock_fd,
+            request,
+            response,
+            sizeof(response)) == -1) {
+
+        memset(
+            request,
+            0,
+            sizeof(request)
+        );
+
+        return -1;
+    }
+
+    memset(
+        request,
+        0,
+        sizeof(request)
+    );
+
+    if (strcmp(
+            response,
+            "MANAGER_PASSWORD_OK") == 0) {
+
+        printf(
+            "\nPassword changed successfully.\n"
+        );
+
+        return 0;
+    }
+
+    if (strcmp(
+            response,
+            "MANAGER_PASSWORD_FAILED|INCORRECT_CURRENT_PASSWORD") == 0) {
+
+        printf(
+            "\nCurrent password is incorrect.\n"
+        );
+
+        return 0;
+    }
+
+    if (strcmp(
+            response,
+            "MANAGER_PASSWORD_FAILED|SAME_PASSWORD") == 0) {
+
+        printf(
+            "\nNew password cannot be the same "
+            "as the current password.\n"
+        );
+
+        return 0;
+    }
+
+    if (strcmp(
+            response,
+            "MANAGER_PASSWORD_FAILED|INVALID_PASSWORD") == 0) {
+
+        printf(
+            "\nInvalid new password.\n"
+        );
+
+        return 0;
+    }
+
+    printf(
+        "%s\n",
+        response
+    );
+
+    return 0;
+}
+
+
+
+/*========MANAGER LOOP========*/
+static int manager_loop(
+    int sock_fd,
+    ClientUser *user)
+{
+    char choice[32];
+
+    while (user->logged_in) {
+
+        display_manager_menu(
+            user
+        );
+
+        if (read_line(
+                "Enter choice: ",
+                choice,
+                sizeof(choice)) == -1) {
+
+            return -1;
+        }
+
+        if (strcmp(
+                choice,
+                "1") == 0) {
+
+            if (manager_change_account_status(
+                    sock_fd,
+                    1) == -1) {
+
+                return -1;
+            }
+
+            continue;
+        }
+
+        if (strcmp(
+                choice,
+                "2") == 0) {
+
+            if (manager_change_account_status(
+                    sock_fd,
+                    0) == -1) {
+
+                return -1;
+            }
+
+            continue;
+        }
+
+	if (strcmp(
+        choice,
+        "3") == 0) {
+
+   	 if (manager_view_pending_loans(
+            sock_fd) == -1) {
+
+        return -1;
+   	 }
+
+   	 continue;
+	}
+
+	if (strcmp(
+        choice,
+        "4") == 0) {
+
+   	 if (manager_assign_loan(
+            sock_fd) == -1) {
+
+        	return -1;
+   	 }
+
+   	 continue;
+	}
+
+	if (strcmp(
+        choice,
+        "5") == 0) {
+
+   	 if (manager_review_feedback(
+            sock_fd) == -1) {
+
+        return -1;
+   	 }
+
+   	 continue;
+	}
+
+	if (strcmp(
+        choice,
+        "6") == 0) {
+
+   	 if (manager_change_password(
+            sock_fd) == -1) {
+
+       	 return -1;
+  	 }
+
+   	 continue;
+	}
+
+        if (strcmp(
+                choice,
+                "7") == 0) {
+
+            char response[
+                MAX_RESPONSE_SIZE
+            ];
+
+            if (send_and_receive(
+                    sock_fd,
+                    "LOGOUT",
+                    response,
+                    sizeof(response)) == -1) {
+
+                return -1;
+            }
+
+            if (strcmp(
+                    response,
+                    "LOGOUT_OK") == 0) {
+
+                user->logged_in = 0;
+
+                printf(
+                    "\nLogged out successfully.\n"
+                );
+
+                return 0;
+            }
+
+            printf(
+                "%s\n",
+                response
+            );
+
+            continue;
+        }
+
+        if (strcmp(
+                choice,
+                "0") == 0) {
+
+            send_message(
+                sock_fd,
+                "EXIT"
+            );
+
+            return 1;
+        }
+
+        printf(
+            "\nInvalid choice.\n"
+        );
+    }
+
+    return 0;
+}
+
 
 
 int main(void)
@@ -3624,6 +4481,20 @@ int main(void)
             sock_fd,
             &user
         );
+	
+	if (result!=0)
+		running = 0;
+	continue;
+	}
+
+	if (user.role ==
+         ROLE_MANAGER) {
+
+   	int  result =
+        manager_loop(
+            sock_fd,
+            &user
+        );
 
    	 if (result != 0)
        		 running = 0;
@@ -3661,3 +4532,5 @@ int main(void)
 
     return EXIT_SUCCESS;
 }
+
+

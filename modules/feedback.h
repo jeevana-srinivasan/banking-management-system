@@ -4,6 +4,8 @@
 #include "common.h"
 #include "config.h"
 
+#include <stddef.h>
+
 typedef struct {
     FeedbackId feedback_id;
     UserId user_id;
@@ -16,6 +18,11 @@ OperationStatus submit_feedback(
     UserId user_id,
     const char *message,
     FeedbackRecord *created_feedback
+);
+
+OperationStatus get_all_feedback(
+    char *output,
+    size_t output_size
 );
 
 #endif

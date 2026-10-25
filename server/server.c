@@ -1096,6 +1096,745 @@ static int parse_employee_change_password_request(
     return 0;
 }
 
+static int parse_manager_account_status_request(
+    const char *request,
+    const char *command,
+    AccountId *account_id)
+{
+    size_t command_length =
+        strlen(command);
+
+    if (strncmp(
+            request,
+            command,
+            command_length) != 0) {
+
+        return -1;
+    }
+
+    const char *value =
+        request +
+        command_length;
+
+    if (value[0] == '\0' ||
+        strchr(
+            value,
+            '|') != NULL) {
+
+        return -1;
+    }
+
+    errno = 0;
+
+    char *end = NULL;
+
+    long long parsed =
+        strtoll(
+            value,
+            &end,
+            10
+        );
+
+    if (errno != 0 ||
+        end == value ||
+        *end != '\0' ||
+        parsed <= 0) {
+
+        return -1;
+    }
+
+    *account_id =
+        (AccountId)parsed;
+
+    return 0;
+}
+
+//Manager handler function
+static int handle_manager_account_status(
+    int client_fd,
+    const Session *session,
+    const char *request,
+    AccountStatus new_status,
+    const char *command)
+{
+    if (session->role !=
+        ROLE_MANAGER) {
+
+        send_message(
+            client_fd,
+            "MANAGER_ACCOUNT_FAILED|PERMISSION_DENIED"
+        );
+
+        return 0;
+    }
+
+    AccountId account_id;
+
+    if (parse_manager_account_status_request(
+            request,
+            command,
+            &account_id) == -1) {
+
+        send_message(
+            client_fd,
+            "MANAGER_ACCOUNT_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    AccountRecord account;
+
+    OperationStatus status =
+        set_account_status(
+            account_id,
+            new_status,
+            &account
+        );
+
+    if (status ==
+        STATUS_NOT_FOUND) {
+
+        send_message(
+            client_fd,
+            "MANAGER_ACCOUNT_FAILED|NOT_FOUND"
+        );
+
+        return 0;
+    }
+
+    if (status ==
+        STATUS_CONFLICT) {
+
+        send_message(
+            client_fd,
+            "MANAGER_ACCOUNT_FAILED|ACCOUNT_CLOSED"
+        );
+
+        return 0;
+    }
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "MANAGER_ACCOUNT_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    const char *status_name =
+        account.status ==
+                ACCOUNT_ACTIVE
+            ? "ACTIVE"
+            : "INACTIVE";
+
+    char response[256];
+
+    snprintf(
+        response,
+        sizeof(response),
+        "MANAGER_ACCOUNT_OK|%lld|%lld|%s",
+        (long long)
+            account.account_id,
+        (long long)
+            account.user_id,
+        status_name
+    );
+
+    send_message(
+        client_fd,
+        response
+    );
+
+    return 0;
+}
+
+static int handle_view_pending_loans(
+    int client_fd,
+    const Session *session)
+{
+    if (session->role !=
+        ROLE_MANAGER) {
+
+        send_message(
+            client_fd,
+            "PENDING_LOANS_FAILED|PERMISSION_DENIED"
+        );
+
+        return 0;
+    }
+
+    char loans[
+        MAX_RESPONSE_SIZE
+    ];
+
+    OperationStatus status =
+        get_pending_loans(
+            loans,
+            sizeof(loans)
+        );
+
+    if (status ==
+        STATUS_NOT_FOUND) {
+
+        send_message(
+            client_fd,
+            "PENDING_LOANS_EMPTY"
+        );
+
+        return 0;
+    }
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "PENDING_LOANS_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    char response[
+        MAX_RESPONSE_SIZE
+    ];
+
+    int written =
+        snprintf(
+            response,
+            sizeof(response),
+            "PENDING_LOANS_OK|%s",
+            loans
+        );
+
+    if (written < 0 ||
+        (size_t)written >=
+            sizeof(response)) {
+
+        send_message(
+            client_fd,
+            "PENDING_LOANS_FAILED|TOO_LARGE"
+        );
+
+        return 0;
+    }
+
+    send_message(
+        client_fd,
+        response
+    );
+
+    return 0;
+}
+
+static int parse_assign_loan_request(
+    const char *request,
+    LoanId *loan_id,
+    UserId *employee_id)
+{
+    const char prefix[] =
+        "ASSIGN_LOAN|";
+
+    if (strncmp(
+            request,
+            prefix,
+            strlen(prefix)) != 0) {
+
+        return -1;
+    }
+
+    char copy[128];
+
+    if (strlen(request) >=
+        sizeof(copy)) {
+
+        return -1;
+    }
+
+    strcpy(
+        copy,
+        request +
+            strlen(prefix)
+    );
+
+    char *separator =
+        strchr(
+            copy,
+            '|'
+        );
+
+    if (separator == NULL)
+        return -1;
+
+    *separator =
+        '\0';
+
+    if (strchr(
+            separator + 1,
+            '|') != NULL) {
+
+        return -1;
+    }
+
+    errno = 0;
+
+    char *end1 = NULL;
+    char *end2 = NULL;
+
+    long long parsed_loan =
+        strtoll(
+            copy,
+            &end1,
+            10
+        );
+
+    if (errno != 0 ||
+        end1 == copy ||
+        *end1 != '\0' ||
+        parsed_loan <= 0) {
+
+        return -1;
+    }
+
+    errno = 0;
+
+    long long parsed_employee =
+        strtoll(
+            separator + 1,
+            &end2,
+            10
+        );
+
+    if (errno != 0 ||
+        end2 == separator + 1 ||
+        *end2 != '\0' ||
+        parsed_employee <= 0) {
+
+        return -1;
+    }
+
+    *loan_id =
+        (LoanId)parsed_loan;
+
+    *employee_id =
+        (UserId)parsed_employee;
+
+    return 0;
+}
+
+static int handle_assign_loan(
+    int client_fd,
+    const Session *session,
+    const char *request)
+{
+    if (session->role !=
+        ROLE_MANAGER) {
+
+        send_message(
+            client_fd,
+            "ASSIGN_LOAN_FAILED|PERMISSION_DENIED"
+        );
+
+        return 0;
+    }
+
+    LoanId loan_id;
+    UserId employee_id;
+
+    if (parse_assign_loan_request(
+            request,
+            &loan_id,
+            &employee_id) == -1) {
+
+        send_message(
+            client_fd,
+            "ASSIGN_LOAN_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    /*
+     * Verify that the supplied user really
+     * is an active employee.
+     */
+    UserRecord employee;
+
+    OperationStatus status =
+        find_user_by_id(
+            employee_id,
+            &employee
+        );
+
+    if (status ==
+        STATUS_NOT_FOUND) {
+
+        send_message(
+            client_fd,
+            "ASSIGN_LOAN_FAILED|EMPLOYEE_NOT_FOUND"
+        );
+
+        return 0;
+    }
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "ASSIGN_LOAN_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    if (employee.role !=
+        ROLE_EMPLOYEE) {
+
+        send_message(
+            client_fd,
+            "ASSIGN_LOAN_FAILED|NOT_EMPLOYEE"
+        );
+
+        return 0;
+    }
+
+    if (!employee.active) {
+
+        send_message(
+            client_fd,
+            "ASSIGN_LOAN_FAILED|EMPLOYEE_INACTIVE"
+        );
+
+        return 0;
+    }
+
+    LoanRecord loan;
+
+    status =
+        assign_loan_to_employee(
+            loan_id,
+            employee_id,
+            &loan
+        );
+
+    if (status ==
+        STATUS_NOT_FOUND) {
+
+        send_message(
+            client_fd,
+            "ASSIGN_LOAN_FAILED|LOAN_NOT_FOUND"
+        );
+
+        return 0;
+    }
+
+    if (status ==
+        STATUS_CONFLICT) {
+
+        send_message(
+            client_fd,
+            "ASSIGN_LOAN_FAILED|NOT_PENDING"
+        );
+
+        return 0;
+    }
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "ASSIGN_LOAN_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    char response[256];
+
+    snprintf(
+        response,
+        sizeof(response),
+        "ASSIGN_LOAN_OK|%lld|%lld",
+        (long long)
+            loan.loan_id,
+        (long long)
+            employee_id
+    );
+
+    send_message(
+        client_fd,
+        response
+    );
+
+    return 0;
+}
+
+static int handle_review_feedback(
+    int client_fd,
+    const Session *session)
+{
+    if (session->role !=
+        ROLE_MANAGER) {
+
+        send_message(
+            client_fd,
+            "FEEDBACK_REVIEW_FAILED|PERMISSION_DENIED"
+        );
+
+        return 0;
+    }
+
+    char feedback[
+        MAX_RESPONSE_SIZE
+    ];
+
+    OperationStatus status =
+        get_all_feedback(
+            feedback,
+            sizeof(feedback)
+        );
+
+    if (status ==
+        STATUS_NOT_FOUND) {
+
+        send_message(
+            client_fd,
+            "FEEDBACK_REVIEW_EMPTY"
+        );
+
+        return 0;
+    }
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "FEEDBACK_REVIEW_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    char response[
+        MAX_RESPONSE_SIZE
+    ];
+
+    int written =
+        snprintf(
+            response,
+            sizeof(response),
+            "FEEDBACK_REVIEW_OK|%s",
+            feedback
+        );
+
+    if (written < 0 ||
+        (size_t)written >=
+            sizeof(response)) {
+
+        send_message(
+            client_fd,
+            "FEEDBACK_REVIEW_FAILED|TOO_LARGE"
+        );
+
+        return 0;
+    }
+
+    send_message(
+        client_fd,
+        response
+    );
+
+    return 0;
+}
+
+static int parse_manager_change_password_request(
+    const char *request,
+    char *current_password,
+    size_t current_size,
+    char *new_password,
+    size_t new_size)
+{
+    const char prefix[] =
+        "MANAGER_CHANGE_PASSWORD|";
+
+    if (strncmp(
+            request,
+            prefix,
+            strlen(prefix)) != 0) {
+
+        return -1;
+    }
+
+    char copy[
+        MAX_REQUEST_SIZE
+    ];
+
+    if (strlen(request) >=
+        sizeof(copy)) {
+
+        return -1;
+    }
+
+    strcpy(
+        copy,
+        request +
+            strlen(prefix)
+    );
+
+    char *separator =
+        strchr(
+            copy,
+            '|'
+        );
+
+    if (separator == NULL)
+        return -1;
+
+    *separator =
+        '\0';
+
+    if (strchr(
+            separator + 1,
+            '|') != NULL) {
+
+        return -1;
+    }
+
+    if (copy[0] == '\0' ||
+        separator[1] == '\0' ||
+        strlen(copy) >= current_size ||
+        strlen(separator + 1) >= new_size) {
+
+        return -1;
+    }
+
+    strcpy(
+        current_password,
+        copy
+    );
+
+    strcpy(
+        new_password,
+        separator + 1
+    );
+
+    return 0;
+}
+
+
+static int handle_manager_change_password(
+    int client_fd,
+    const Session *session,
+    const char *request)
+{
+    if (session->role !=
+        ROLE_MANAGER) {
+
+        send_message(
+            client_fd,
+            "MANAGER_PASSWORD_FAILED|PERMISSION_DENIED"
+        );
+
+        return 0;
+    }
+
+    char current_password[
+        MAX_PASSWORD_LEN + 1
+    ];
+
+    char new_password[
+        MAX_PASSWORD_LEN + 1
+    ];
+
+    if (parse_manager_change_password_request(
+            request,
+            current_password,
+            sizeof(current_password),
+            new_password,
+            sizeof(new_password)) == -1) {
+
+        send_message(
+            client_fd,
+            "MANAGER_PASSWORD_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    OperationStatus status =
+        change_user_password(
+            session->user_id,
+            current_password,
+            new_password
+        );
+
+    memset(
+        current_password,
+        0,
+        sizeof(current_password)
+    );
+
+    memset(
+        new_password,
+        0,
+        sizeof(new_password)
+    );
+
+    if (status ==
+        STATUS_PERMISSION_DENIED) {
+
+        send_message(
+            client_fd,
+            "MANAGER_PASSWORD_FAILED|INCORRECT_CURRENT_PASSWORD"
+        );
+
+        return 0;
+    }
+
+    if (status ==
+        STATUS_CONFLICT) {
+
+        send_message(
+            client_fd,
+            "MANAGER_PASSWORD_FAILED|SAME_PASSWORD"
+        );
+
+        return 0;
+    }
+
+    if (status ==
+        STATUS_INVALID_INPUT) {
+
+        send_message(
+            client_fd,
+            "MANAGER_PASSWORD_FAILED|INVALID_PASSWORD"
+        );
+
+        return 0;
+    }
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "MANAGER_PASSWORD_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    send_message(
+        client_fd,
+        "MANAGER_PASSWORD_OK"
+    );
+
+    return 0;
+}
+
+
+//=======================================Process request============================================//
 static int process_request(
     int client_fd,
     const char *request)
@@ -1268,6 +2007,79 @@ static int process_request(
 
         return 0;
     }
+
+/*MANAGER COMMANDS*/
+if (strncmp(
+        request,
+        "ACTIVATE_ACCOUNT|",
+        17) == 0) {
+
+    return handle_manager_account_status(
+        client_fd,
+        &session,
+        request,
+        ACCOUNT_ACTIVE,
+        "ACTIVATE_ACCOUNT|"
+    );
+}
+
+if (strncmp(
+        request,
+        "DEACTIVATE_ACCOUNT|",
+        19) == 0) {
+
+    return handle_manager_account_status(
+        client_fd,
+        &session,
+        request,
+        ACCOUNT_INACTIVE,
+        "DEACTIVATE_ACCOUNT|"
+    );
+}
+
+if (strcmp(
+        request,
+        "VIEW_PENDING_LOANS") == 0) {
+
+    return handle_view_pending_loans(
+        client_fd,
+        &session
+    );
+}
+
+if (strncmp(
+        request,
+        "ASSIGN_LOAN|",
+        12) == 0) {
+
+    return handle_assign_loan(
+        client_fd,
+        &session,
+        request
+    );
+}
+
+if (strcmp(
+        request,
+        "REVIEW_FEEDBACK") == 0) {
+
+    return handle_review_feedback(
+        client_fd,
+        &session
+    );
+}
+
+if (strncmp(
+        request,
+        "MANAGER_CHANGE_PASSWORD|",
+        24) == 0) {
+
+    return handle_manager_change_password(
+        client_fd,
+        &session,
+        request
+    );
+}
 
 
 /* Employee commands */
@@ -2329,6 +3141,30 @@ if (strncmp(
 
         return 0;
     }
+
+    if (approve) {
+
+    Money new_balance;
+
+    status =
+        disburse_loan_amount(
+            loan.account_id,
+            loan.amount,
+            session.user_id,
+            loan.loan_id,
+            &new_balance
+        );
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "LOAN_DECISION_FAILED|DISBURSEMENT_FAILED"
+        );
+
+        return 0;
+    }
+}
 
     char response[256];
 
