@@ -162,7 +162,7 @@ void display_admin_menu(
     printf("1. Add New Bank Employee\n");
     printf("2. View User Details\n");
     printf("3. Modify Customer/Employee Details\n");
-    printf("4. Manage User Roles\n");
+    printf("4. Enable / Disable user login\n");
     printf("5. Change Password\n");
     printf("6. Logout\n");
     printf("0. Exit\n");

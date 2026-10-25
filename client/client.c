@@ -5359,6 +5359,203 @@ static int admin_change_password(
     return 0;
 }
 
+static int admin_manage_user_access(
+    int sock_fd)
+{
+    char id_text[64];
+
+    if (read_line(
+            "Enter user ID: ",
+            id_text,
+            sizeof(id_text)) == -1) {
+
+        return -1;
+    }
+
+    errno = 0;
+
+    char *end = NULL;
+
+    long long user_id =
+        strtoll(
+            id_text,
+            &end,
+            10
+        );
+
+    if (errno != 0 ||
+        end == id_text ||
+        *end != '\0' ||
+        user_id <= 0) {
+
+        printf(
+            "\nInvalid user ID.\n"
+        );
+
+        return 0;
+    }
+
+    printf("\n");
+    printf("1. Enable User Login\n");
+    printf("2. Disable User Login\n");
+
+    char access_choice[16];
+
+    if (read_line(
+            "Enter choice: ",
+            access_choice,
+            sizeof(access_choice)) == -1) {
+
+        return -1;
+    }
+
+    const char *action;
+
+    if (strcmp(
+            access_choice,
+            "1") == 0) {
+
+        action =
+            "ENABLE";
+
+    } else if (strcmp(
+                   access_choice,
+                   "2") == 0) {
+
+        action =
+            "DISABLE";
+
+    } else {
+
+        printf(
+            "\nInvalid choice.\n"
+        );
+
+        return 0;
+    }
+
+    char request[128];
+
+    snprintf(
+        request,
+        sizeof(request),
+        "SET_USER_ACCESS|%lld|%s",
+        user_id,
+        action
+    );
+
+    char response[
+        MAX_RESPONSE_SIZE
+    ];
+
+    if (send_and_receive(
+            sock_fd,
+            request,
+            response,
+            sizeof(response)) == -1) {
+
+        return -1;
+    }
+
+    if (strcmp(
+            response,
+            "USER_ACCESS_FAILED|USER_NOT_FOUND") == 0) {
+
+        printf(
+            "\nUser not found.\n"
+        );
+
+        return 0;
+    }
+
+    if (strcmp(
+            response,
+            "USER_ACCESS_FAILED|SELF") == 0) {
+
+        printf(
+            "\nYou cannot disable your own Admin account.\n"
+        );
+
+        return 0;
+    }
+
+    if (strcmp(
+            response,
+            "USER_ACCESS_FAILED|PROTECTED_USER") == 0) {
+
+        printf(
+            "\nManager/Admin access cannot be "
+            "changed from this option.\n"
+        );
+
+        return 0;
+    }
+
+    if (strcmp(
+            response,
+            "USER_ACCESS_FAILED|ALREADY_ENABLED") == 0) {
+
+        printf(
+            "\nUser access is already enabled.\n"
+        );
+
+        return 0;
+    }
+
+    if (strcmp(
+            response,
+            "USER_ACCESS_FAILED|ALREADY_DISABLED") == 0) {
+
+        printf(
+            "\nUser access is already disabled.\n"
+        );
+
+        return 0;
+    }
+
+    if (strncmp(
+            response,
+            "USER_ACCESS_OK|",
+            15) == 0) {
+
+        long long returned_id;
+        char status[32];
+
+        if (sscanf(
+                response,
+                "USER_ACCESS_OK|%lld|%31s",
+                &returned_id,
+                status) == 2) {
+
+            printf("\n");
+            printf("----------------------------------------\n");
+            printf("          USER ACCESS UPDATED\n");
+            printf("----------------------------------------\n");
+
+            printf(
+                "User ID : %lld\n",
+                returned_id
+            );
+
+            printf(
+                "Access  : %s\n",
+                status
+            );
+
+            printf("----------------------------------------\n");
+        }
+
+        return 0;
+    }
+
+    printf(
+        "%s\n",
+        response
+    );
+
+    return 0;
+}
+
 
 
 /*=======ADMIN LOOP=======*/
@@ -5425,7 +5622,7 @@ static int admin_loop(
         choice,
         "4") == 0) {
 
-   	 if (admin_manage_user_role(
+   	 if (admin_manage_user_access(
             sock_fd) == -1) {
 
        	 return -1;

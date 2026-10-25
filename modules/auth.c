@@ -157,6 +157,13 @@ OperationStatus generate_password_hash(
         return STATUS_INVALID_INPUT;
     }
 
+    if (strchr(
+        password,
+        '|') != NULL) {
+
+   	 return STATUS_INVALID_INPUT;
+    }	
+
     char salt[64];
 
     if (generate_password_salt(
@@ -214,6 +221,16 @@ OperationStatus change_user_password(
 
         return STATUS_INVALID_INPUT;
     }
+
+    if (strchr(
+        current_password,
+        '|') != NULL ||
+    strchr(
+        new_password,
+        '|') != NULL) {
+
+    return STATUS_INVALID_INPUT;
+	}
 
     /*
      * Do not allow "changing" to exactly

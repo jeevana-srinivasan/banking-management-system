@@ -2810,6 +2810,234 @@ static int handle_admin_change_password(
     return 0;
 }
 
+static int handle_admin_user_access(
+    int client_fd,
+    const Session *session,
+    const char *request)
+{
+    if (session->role !=
+        ROLE_ADMIN) {
+
+        send_message(
+            client_fd,
+            "USER_ACCESS_FAILED|PERMISSION_DENIED"
+        );
+
+        return 0;
+    }
+
+    const char prefix[] =
+        "SET_USER_ACCESS|";
+
+    if (strncmp(
+            request,
+            prefix,
+            strlen(prefix)) != 0) {
+
+        send_message(
+            client_fd,
+            "USER_ACCESS_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    char copy[128];
+
+    if (strlen(request) >=
+        sizeof(copy)) {
+
+        send_message(
+            client_fd,
+            "USER_ACCESS_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    strcpy(
+        copy,
+        request +
+            strlen(prefix)
+    );
+
+    char *separator =
+        strchr(
+            copy,
+            '|'
+        );
+
+    if (separator == NULL) {
+
+        send_message(
+            client_fd,
+            "USER_ACCESS_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    *separator =
+        '\0';
+
+    errno = 0;
+
+    char *end = NULL;
+
+    long long parsed_id =
+        strtoll(
+            copy,
+            &end,
+            10
+        );
+
+    if (errno != 0 ||
+        end == copy ||
+        *end != '\0' ||
+        parsed_id <= 0) {
+
+        send_message(
+            client_fd,
+            "USER_ACCESS_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    UserId user_id =
+        (UserId)parsed_id;
+
+    /*
+     * Admin cannot disable themselves.
+     */
+    if (user_id ==
+        session->user_id) {
+
+        send_message(
+            client_fd,
+            "USER_ACCESS_FAILED|SELF"
+        );
+
+        return 0;
+    }
+
+    int active;
+
+    if (strcmp(
+            separator + 1,
+            "ENABLE") == 0) {
+
+        active = 1;
+
+    } else if (strcmp(
+                   separator + 1,
+                   "DISABLE") == 0) {
+
+        active = 0;
+
+    } else {
+
+        send_message(
+            client_fd,
+            "USER_ACCESS_FAILED|INVALID_REQUEST"
+        );
+
+        return 0;
+    }
+
+    UserRecord user;
+
+    OperationStatus status =
+        find_user_by_id(
+            user_id,
+            &user
+        );
+
+    if (status ==
+        STATUS_NOT_FOUND) {
+
+        send_message(
+            client_fd,
+            "USER_ACCESS_FAILED|USER_NOT_FOUND"
+        );
+
+        return 0;
+    }
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "USER_ACCESS_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    /*
+     * Admin controls Customer/Employee access.
+     * Manager/Admin accounts remain protected.
+     */
+    if (user.role != ROLE_CUSTOMER &&
+        user.role != ROLE_EMPLOYEE) {
+
+        send_message(
+            client_fd,
+            "USER_ACCESS_FAILED|PROTECTED_USER"
+        );
+
+        return 0;
+    }
+
+    status =
+        update_user_active_status(
+            user_id,
+            active
+        );
+
+    if (status ==
+        STATUS_CONFLICT) {
+
+        send_message(
+            client_fd,
+            active
+                ? "USER_ACCESS_FAILED|ALREADY_ENABLED"
+                : "USER_ACCESS_FAILED|ALREADY_DISABLED"
+        );
+
+        return 0;
+    }
+
+    if (status != STATUS_OK) {
+
+        send_message(
+            client_fd,
+            "USER_ACCESS_FAILED|SERVER_ERROR"
+        );
+
+        return 0;
+    }
+
+    char response[256];
+
+    snprintf(
+        response,
+        sizeof(response),
+        "USER_ACCESS_OK|%lld|%s",
+        (long long)user_id,
+        active
+            ? "ENABLED"
+            : "DISABLED"
+    );
+
+    send_message(
+        client_fd,
+        response
+    );
+
+    return 0;
+}
+
 //=======================================Process request============================================//
 static int process_request(
     int client_fd,
@@ -2984,6 +3212,34 @@ static int process_request(
         return 0;
     }
 
+    UserRecord current_user;
+
+OperationStatus user_status =
+    find_user_by_id(
+        session.user_id,
+        &current_user
+    );
+
+if (user_status != STATUS_OK) {
+
+    send_message(
+        client_fd,
+        "ERROR|USER_NOT_FOUND"
+    );
+
+    return 0;
+}
+
+if (!current_user.active) {
+
+    send_message(
+        client_fd,
+        "ERROR|USER_DISABLED"
+    );
+
+    return 0;
+}
+
 
 /*ADMIN COMMANDS*/
 
@@ -3041,6 +3297,18 @@ if (strncmp(
         22) == 0) {
 
     return handle_admin_change_password(
+        client_fd,
+        &session,
+        request
+    );
+}
+
+if (strncmp(
+        request,
+        "SET_USER_ACCESS|",
+        16) == 0) {
+
+    return handle_admin_user_access(
         client_fd,
         &session,
         request

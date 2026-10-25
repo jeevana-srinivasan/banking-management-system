@@ -60,4 +60,9 @@ OperationStatus update_user_role(
     UserRole new_role
 );
 
+OperationStatus update_user_active_status(
+    UserId user_id,
+    int active
+);
+
 #endif
